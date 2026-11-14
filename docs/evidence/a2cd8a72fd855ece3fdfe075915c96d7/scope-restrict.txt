@@ -1,0 +1,5 @@
+scopeOf(agent) defined     : true  chain: 2
+global view                : compress,decompress,search_context
+agent view before restrict : bash,compress,decompress,grep,read,search_context,skill
+agent view after restrict  : bash,grep,read,skill
+agent view, undo           : restriction is permanent in this scope

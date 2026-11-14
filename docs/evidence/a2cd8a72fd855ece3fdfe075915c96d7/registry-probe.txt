@@ -1,0 +1,16 @@
+A host WITH plugin, allow = work only
+  before: bash,compress,decompress,grep,read,search_context,skill
+  allow : [bash,read,grep,skill]
+  after : bash,grep,read,skill
+B host WITH plugin, allow = work + registered compression
+  before: bash,compress,decompress,grep,read,search_context,skill
+  allow : [bash,read,grep,skill,compress,decompress,search_context]
+  after : bash,compress,decompress,grep,read,search_context,skill
+C host WITHOUT plugin, allow = work + compression names unconditionally
+  before: bash,grep,read,skill
+  allow : [bash,read,grep,skill,compress,decompress,search_context]
+  REFUSED: tools.restrict() names unknown global tools "compress", "decompress", "search_context"; known global
+D host WITHOUT plugin, allow = work + registered compression
+  before: bash,grep,read,skill
+  allow : [bash,read,grep,skill]
+  after : bash,grep,read,skill
