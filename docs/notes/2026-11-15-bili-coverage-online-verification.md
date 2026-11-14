@@ -1,7 +1,7 @@
 # 2026-11-15 线上验证：压缩面已随重启生效；0.9.7 五项继承逐条结论
 
-承接 [restrict 掩掉 compress](2026-11-15-bili-worker-compression-coverage.md)。宿主 superagent
-于 `2026-11-15T04:34:48` 重启（此前那次「需人决定是否重启」已由人执行），本文记录重启后的实测。
+承接 [restrict 掩掉 compress](2026-11-15-bili-worker-compression-coverage.md)。宿主于
+`2026-11-15T04:34:48` 重启（此前「需人决定是否重启」已由人执行），本文记录重启后实测。
 
 ## 结论
 
@@ -56,6 +56,6 @@ mtime 与某次 create 同时。`template.js` 的 `sharedManifest()` 从 `hostMa
 node docs/evidence/a2cd8a72fd855ece3fdfe075915c96d7/online-verify.mjs   # 本文全部数据
 ```
 
-- 读 PR 要带 `--repo seabiscuit-agent/dsh-superagent-prototype`，否则因上游关闭 PR 报
-  `GraphQL: Pull requests are disabled for this repository.`
-- 插件仓 `lib/` 是构建产物，`link:` 的 profile 直接跑它；改 `src/` 后必须 `pnpm build` 并重启宿主。
+读 PR 要带 `--repo seabiscuit-agent/dsh-superagent-prototype`，否则因上游关闭 PR 报
+`GraphQL: Pull requests are disabled for this repository.`；插件仓 `lib/` 是构建产物，
+`link:` 的 profile 直接跑它，改 `src/` 后必须 `pnpm build` 并重启宿主。
