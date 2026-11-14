@@ -1,0 +1,117 @@
+# compress surface: before vs after the 2026-11-15T04:34:48 host restart
+log: /Users/seabiscuit/.local/state/billion-context/bili.log
+{
+ "before": {
+  "lines": 26651,
+  "surfaceOff": 1021,
+  "surfaceOn": 0,
+  "nudgeInject": 0,
+  "oversizeRefusal": 3,
+  "directUncompressed": 93
+ },
+ "after": {
+  "lines": 7724,
+  "surfaceOff": 0,
+  "surfaceOn": 0,
+  "nudgeInject": 11,
+  "oversizeRefusal": 0,
+  "directUncompressed": 27
+ }
+}
+
+Note: the plugin only logs the surface line when the surface is OFF and a nudge was due
+(surfaceOffDetail(): `if (d.compressSurfaceOn || !shouldInject) return void 0`), so
+"after.surfaceOff === 0" means every judged surface was ON, not that no judgement ran.
+
+## why the log holds no literal "compress is declared" line
+- lines printing top-level=[...] before the restart: 1021
+- lines printing top-level=[...] after the restart:  0
+- of those, top-level lists naming compress before/after: 0 / 0
+  (every such pre-restart line matches the nudge reason text "max compressible N < threshold",
+   not the tool list; e.g. 04:08:36 lists 25 tools, none of them compress/decompress/search_context)
+  => the usable evidence is behavioural: the nudge FIRES, and this session folded blocks.
+
+## same-origin plugin status per session (blocks folded after the restart)
+- worker-4716a3f921aff4d9f7b67488bd118f21 (worker session that hit the T2 emergency nudge)
+    blocks=14 active=4
+    Sent to LLM (after compression, est.): 97k (10% of limit)
+    Nudge: idle — max compressible 48930 < threshold 50000
+    Blocks: 4 active / 14 total (955k tokens compressed, cumulative)
+- worker-a850c7ffe67914d4e9279ab1885e0941 (worker session (spawner work))
+    blocks=3 active=3
+    Sent to LLM (after compression, est.): 122k (12% of limit)
+    Nudge: idle — growth 710 < floor 22500, ready: T1 77408
+    Blocks: 3 active / 3 total (261k tokens compressed, cumulative)
+- worker-19628a72d9fe7a8b42066c53540869a4 (this ticket session)
+    blocks=7 active=7
+    Sent to LLM (after compression, est.): 98k (10% of limit)
+    Nudge: idle — max compressible 34324 < threshold 50000; growth 14961 + absorbed 44463 held (single abort, #5293) < floor 22500
+    Blocks: 7 active / 7 total (493k tokens compressed, cumulative)
+- orchestrator-066e68821adf969eb958fa0bc94e1d13 (orchestrator session)
+    blocks=6 active=5
+    Sent to LLM (after compression, est.): 69k (7% of limit)
+    Nudge: idle — max compressible 19288 < threshold 50000; growth 16774 + absorbed 7286 held (single abort, #5293) < floor 22500
+    Blocks: 5 active / 6 total (781k tokens compressed, cumulative)
+
+## item 4 — eval / executor settings (compared by value, revisions excluded)
+- superagent-2: eval SAME, executor SAME
+- superagent-4: eval SAME, executor SAME
+- inherit-e2e: eval SAME, executor SAME
+- inherit-nohost: eval SAME, executor DIFF
+    child executor = {"model":null,"maxWorkers":3,"directory":"","prepare":"","blockedCommands":[]}
+host eval     = {"mode":"auto","timeoutSeconds":120,"model":{"provider":"opencode-go","model":"deepseek-v4.1-flash","reasoningEffort":"high"}}
+host executor = {"model":{"provider":"workbuddy","model":"deepseek-v4.1-flash","reasoningEffort":"high"},"maxWorkers":3,"directory":"/Users/seabiscuit/src","prepare":"repo=${DSH_SUPERAGENT_GITHUB_REPOSITORY#*/}; clone=\"/Users/seabiscuit/src/$repo\"; [ -d \"$clone/.git\" ] || gh repo clone \"$DSH_SUPERAGENT_GITHUB_REPOSITORY\" \"$clone\" --; git -C \"$clone\" fetch --no-tags \"https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git\" \"${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET\" && git -C \"$clone\" worktree add -b \"agent/$DSH_SUPERAGENT_NAME\" \"$DSH_SUPERAGENT_DIR\" \"refs/dsh-superagent/$DSH_SUPERAGENT_TICKET\"","blockedCommands":[]}
+
+## item 2 — model catalogue and enablement (orchestrator /models)
+- host: routable=[deepseek-account,zai-coding-cn,opencode-go,qoder-global,workbuddy] catalogue SAME as host
+- superagent-2: routable=[deepseek-account,zai-coding-cn,opencode-go] catalogue DIFFERS from host
+    missing: qoder-global:qmodel_38max|qfmodel|dfmodel
+    missing: workbuddy:hy4free|deepseek-v4.1-flash
+- superagent-4: routable=[deepseek-account,zai-coding-cn,opencode-go,qoder-global,workbuddy] catalogue SAME as host
+- inherit-e2e: routable=[deepseek-account,zai-coding-cn,opencode-go,qoder-global,workbuddy] catalogue SAME as host
+- inherit-nohost: routable=[deepseek-account,zai-coding-cn,opencode-go] catalogue DIFFERS from host
+    missing: qoder-global:qmodel_38max|qfmodel|dfmodel
+    missing: workbuddy:hy4free|deepseek-v4.1-flash
+
+## item 2 root cause — shared layer manifest (the two older instances install from it)
+- host profile manifest:   18 deps / 16 bundles
+- shared layer manifest:   2 deps / 4 bundles  (mtime 2026-11-14T18:40:06.484Z)
+  shared deps = [dsh-superagent, dsh-superagent-spawner]
+- superagent-2: node_modules entries=16 billion-context=NO stamp=4dd7d3352a0a
+- superagent-4: node_modules entries=107 billion-context=yes stamp=bb15378ec2b0
+- inherit-e2e: node_modules entries=107 billion-context=yes stamp=ee578d21d930
+- inherit-nohost: node_modules entries=16 billion-context=NO stamp=4dd7d3352a0a
+
+## item 1 — provider keys (presence only, never values)
+- host refs: [ZAI_API_KEY, OPENCODE_GO_API_KEY] (values not printed)
+- superagent-2: .credentials.yaml symlink=true refs=[ZAI_API_KEY, OPENCODE_GO_API_KEY]
+- superagent-4: .credentials.yaml symlink=true refs=[ZAI_API_KEY, OPENCODE_GO_API_KEY]
+- inherit-e2e: .credentials.yaml symlink=true refs=[ZAI_API_KEY, OPENCODE_GO_API_KEY]
+- inherit-nohost: .credentials.yaml symlink=true refs=[ZAI_API_KEY, OPENCODE_GO_API_KEY]
+
+## item 3 — login state links
+- superagent-2: workbuddy-vault=plain .credentials.yaml=symlink .qoder-accounts.cn.json=absent .qoder-accounts.global.json=absent .qoder-pool.cn.json=absent .workbuddy-roster-seen.cn.json=plain
+  per-instance: .qoder-pool.global.json=absent .workbuddy-device.json=plain
+- superagent-4: workbuddy-vault=plain .credentials.yaml=symlink .qoder-accounts.cn.json=absent .qoder-accounts.global.json=absent .qoder-pool.cn.json=absent .workbuddy-roster-seen.cn.json=plain
+  per-instance: .qoder-pool.global.json=absent .workbuddy-device.json=plain
+- inherit-e2e: workbuddy-vault=symlink .credentials.yaml=symlink .qoder-accounts.cn.json=symlink .qoder-accounts.global.json=symlink .qoder-pool.cn.json=symlink .workbuddy-roster-seen.cn.json=symlink
+  per-instance: .qoder-pool.global.json=plain .workbuddy-device.json=plain
+- inherit-nohost: workbuddy-vault=symlink .credentials.yaml=symlink .qoder-accounts.cn.json=symlink .qoder-accounts.global.json=symlink .qoder-pool.cn.json=symlink .workbuddy-roster-seen.cn.json=symlink
+  per-instance: .qoder-pool.global.json=symlink .workbuddy-device.json=absent
+
+## item 5 — agent CLI and github source
+- host: cli="/Users/seabiscuit/.local/bin/gh-agent" repository="seabiscuit0409/shipany-video-template" enabled=true
+- superagent-2: cli="/Users/seabiscuit/.local/bin/gh-agent" repository="seabiscuit-agent/dsh-superagent-spawner" enabled=true
+- superagent-4: cli="" repository="" enabled=true
+- inherit-e2e: cli="/Users/seabiscuit/.local/bin/gh-agent" repository="seabiscuit0409/shipany-video-template" enabled=true
+- inherit-nohost: cli="" repository="" enabled=true
+
+## spawner inherit warnings (logs/<instance>/inherit.log, last 2 lines)
+- e2e-verify: (empty)
+- final-verify: (empty)
+- full-verify: (empty)
+- inherit-e2e: github: deferred: the instance names no repository yet, so the agent CLI /Users/seabiscuit/.local/bin/gh-agent waits for one ⏎ github: deferred: the instance names no repository yet, so the agent CLI /Users/seabiscuit/.local/bin/gh-agent waits for one
+- inherit-nohost: github: deferred: the instance names no repository yet, so the agent CLI /Users/seabiscuit/.local/bin/gh-agent waits for one ⏎ inherit warning: executor: PUT /settings/executor → 400 "The executor model is not available: no adapter registered for provider \"workbuddy\""
+- prod-verify: (empty)
+- superagent-2: inherit warning: github: The GitHub Source names no repository. ⏎ inherit warning: github: The github Source kind is not installed
+- superagent-4: inherit warning: eval: The eval model is not available: no adapter registered for provider "opencode-go" ⏎ inherit warning: eval: The eval model is not available: no adapter registered for provider "opencode-go"

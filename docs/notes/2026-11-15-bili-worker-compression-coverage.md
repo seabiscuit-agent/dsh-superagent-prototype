@@ -44,11 +44,11 @@ pnpm typecheck && pnpm test && pnpm build
 基线 `8c32a9d` 与修复后同为 2 个失败，且是同样两条与本次无关的环境泄漏用例
 （`GIT_CONFIG_GLOBAL` 未还原）；新增回归用例通过。
 
-## 待做（需人决定）
+## 线上状态
 
-线上确认必须重启 superagent 实例——会掐断在跑的 orchestrator/worker 会话（含执行本工单的会话），
-故未自动执行。重启后应看到 `surface=on`、`compress` 出现在请求 tools 里、被拒次数不再增长。
-若 `surface=on` 已出现但 422 复发，则第二成因在归因/计价一侧，另开一单。
+宿主已于 `2026-11-15T04:34:48` 重启，重启后 `surface=off` 归零、nudge 连续 FIRES、worker 会话自身
+折叠成功——实测见[线上验证](2026-11-15-bili-coverage-online-verification.md)。若 422 复发，则第二成因
+在归因/计价一侧，另开一单。
 
 ## 坑
 
