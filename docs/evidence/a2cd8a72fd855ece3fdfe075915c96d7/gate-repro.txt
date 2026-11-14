@@ -1,0 +1,5 @@
+dsh toolsHostScopedByDefault = true
+worker allow-list (WORK_TOOLS, as today)   compress=false surfaceOn=false → nudge SUPPRESSED
+router allow-list (as today)               compress=false surfaceOn=false → nudge SUPPRESSED
+worker + compress/decompress/search_context compress=true  surfaceOn=true  → nudge FIRES
+router + compress/decompress/search_context compress=true  surfaceOn=true  → nudge FIRES

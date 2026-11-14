@@ -60,6 +60,24 @@ declare module '@deepseek-ai/cordis' {
  */
 const WORK_TOOLS = ['read', 'write', 'edit', 'read_image', 'glob', 'grep', 'bash', 'pwsh', 'job_output', 'job_list', 'job_kill', 'web_search',
   'web_fetch', 'skill', 'todo_write', 'subagent', 'list_subagent_models', 'send_message', 'list_agents', 'interrupt_agent']
+/**
+ * The context-compression tools a host plugin (billion-context) registers on the process, which a Session must keep to be
+ * compressible at all: the plugin decides whether to fold a conversation by checking that its `compress` tool is DECLARED on
+ * the model request it sees. A tool this Session's `restrict({ allow })` masks never reaches the wire, so the plugin reports
+ * `compressSurfaceOff`, injects no compression nudge, and never folds the history — a long worker's context then grows past
+ * the model window and the request is refused outright. They are kept only when the host registered them, so a profile that
+ * has no compression plugin is unchanged, and they grant no file, shell or person-facing capability.
+ */
+const COMPRESSION_TOOLS = ['compress', 'decompress', 'search_context']
+/**
+ * The subset of `COMPRESSION_TOOLS` this host actually registered, read through the parent scope the way `workOnly` reads
+ * `WORK_TOOLS`. Naming a tool the host never registered would make `restrict` refuse the whole allow list, so a profile
+ * without a compression plugin keeps exactly the tools it had.
+ */
+function compressionTools(agent: Agent): string[] {
+  const parent = scopeParentOf(agent)
+  return COMPRESSION_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
+}
 /** What the main Session is told when it would wait: what it waits for comes to it, and a waiting step holds back the next. */
 const NO_WAIT = 'Reports, follow_up notices, new candidates and a background job\'s end with its output arrive by themselves as messages; '
   + 'end the turn instead of waiting for them.'
@@ -260,7 +278,8 @@ export class Sessions {
     const register = this.registerTool(agent, binding)
     for (const tool of host.tools(agent, ticket)) register(tool.name, tool.description, tool.schema, tool.execute)
     if (master) {
-      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill'] }),
+      binding.disposers.push(agent.ctx.tools.restrict({ allow: ['skill', 'bash', 'read', 'read_image', 'job_output', 'job_list', 'job_kill',
+        ...compressionTools(agent)] }),
         agent.ctx.tools.guard(execution => noWait(execution, () => this.routed(agent))))
     } else {
       // An Executor Session keeps the profile's work tools it has, which DSH requires to be known; its own tools are not masked.
@@ -289,7 +308,8 @@ export class Sessions {
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
-    const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
+    // The work tools plus the host's compression tools: masking `compress` makes the plugin stop folding this history.
+    const allow = [...WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent)), ...compressionTools(agent)]
     return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
       const current = store.tickets.get(ticketId)
       return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
