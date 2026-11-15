@@ -77,15 +77,23 @@
   `bindSkills` / `SETUP_FIELDS`）与 #3（多张未决候选的关联规则）、#4（GUI 所有者
   `actor.id` 取值），把结论写回 `design.md`。验证：`design.md` 的 Open Questions
   相应条目被删除或标注结论。
-- [ ] 4.2 把 `source:local` 与 `policy.sources.local` 默认值写进 spawner 的
+- [x] 4.2 把 `source:local` 与 `policy.sources.local` 默认值写进 spawner 的
   settings-template-layer 模板。验证：新建实例后 `GET settings` 直接含所有者
-  allowed 列表，无需手工补配。
-- [ ] 4.3 `PUT settings/source:feishu` 设 `enabled: false` 并
+  allowed 列表，无需手工补配。（spawner PR seabiscuit-agent/dsh-superagent-spawner#14，
+  已合并 cac8b50：模板 `blocks.policy.sources.local` 预置 owner；`source:local` 条目
+  本身由插件代码注册，模板不需要。生产证据见 docs/evidence/95a77ca9edd779c4e91aa98939192d08/，
+  新实例 factory-check 出厂即含该列表。）
+- [x] 4.3 `PUT settings/source:feishu` 设 `enabled: false` 并
   `scripts/dsh-superagent --profile superagent restart`。验证：`GET sources` 中 feishu
-  为 `off` 而非 `error`，重复验收项 6–7 仍成功建单（验收项 10）。
-- [ ] 4.4 在宿主实例 `superagent :3082` 逐条跑 proposal.md 验收项 4–11，把命令与
+  为 `off` 而非 `error`，重复验收项 6–7 仍成功建单（验收项 10）。（22:30 PUT
+  rev3→4 saved；重启后 feishu=off、github/local=ready；本工单后续多条主会话消息
+  继续建单/跟进，证据同上目录。）
+- [x] 4.4 在宿主实例 `superagent :3082` 逐条跑 proposal.md 验收项 4–11，把命令与
   输出贴进 PR 描述。由人操作：确认「主会话无 @ 发需求 → 落盘 → 工单跑完」全过程
-  没有点击任何按钮。验证：11 条验收项全部有生产证据。
-- [ ] 4.5 `openspec archive local-dispatch-source --yes` 归档，delta 合并进
+  没有点击任何按钮。验证：11 条验收项全部有生产证据。（宿主 22:34 重启加载 0.9.12
+  后采集；矩阵见 docs/evidence/95a77ca9edd779c4e91aa98939192d08/README.md。验收项 11
+  如实记录差异：Apply→accept 段在 runtime 默认 prompts/dispatch.md，不在
+  current.config overlay，defaultChanged=[]。）
+- [x] 4.5 `openspec archive local-dispatch-source --yes` 归档，delta 合并进
   `openspec/specs/local-dispatch-source/spec.md`。验证：`openspec list --specs` 出现
-  该能力且 `openspec validate --all --strict` 仍退出 0。
+  该能力且 `openspec validate --all --strict` 仍退出 0。（本 PR 即归档提交。）
