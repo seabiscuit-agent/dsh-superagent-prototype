@@ -8,6 +8,7 @@ import type { AssessmentOutcome } from './ports.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
 import { canRetry } from './stage.ts'
+import { freshWorkerSessionId } from './worker-session.ts'
 
 const sameChannel = (a: ChannelRef, b: ChannelRef): boolean => JSON.stringify(a) === JSON.stringify(b)
 /** Whether an Input is a message no person wrote, such as CI's, a bot's, or the main Session's note. */
@@ -379,7 +380,11 @@ export class Tickets extends EnginePart {
   }
   /** Add a pending Assignment; a failed delivery to the one before it no longer concerns the ticket. */
   private newAssignment(ticket: Ticket): Assignment {
-    const assignment: Assignment = { id: key('assignment', ticket.id, String(ticket.assignments.length)), state: 'pending', createdAt: this.now() }
+    const previous = ticket.assignments.at(-1)
+    // A person's retry starts the worker over in a fresh Session; every other continuation keeps the worker's Session.
+    const session = previous?.endedReason === 'retried' ? freshWorkerSessionId(ticket.id, ticket.assignments.length) : previous?.session
+    const assignment: Assignment = { id: key('assignment', ticket.id, String(ticket.assignments.length)), state: 'pending', createdAt: this.now(),
+      ...(session ? { session } : {}) }
     ticket.assignments.push(assignment)
     delete ticket.delivery
     return assignment

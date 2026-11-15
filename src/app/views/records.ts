@@ -5,7 +5,7 @@ import { canRetry, followupOwners, latestReport, liveTicket, settled, threadKey,
 import { allowedSender, listedBot } from '../../policy.ts'
 import type { ChannelLink, Localized } from '../../sources/kind.ts'
 import type { SourceRegistry } from '../../sources/registry.ts'
-import { workerSessionId } from '../../executor/dsh.ts'
+import { assignmentSessionId } from '../../core/worker-session.ts'
 import type { Store } from '../store.ts'
 import { attribute, markdown, plain, preview, readable } from './text.ts'
 
@@ -123,9 +123,9 @@ export function ticketSummary(ticket: Ticket) {
     actions: { retry: canRetry(ticket), stop: liveTicket(ticket) }, strength: ticket.mandate.strength, ended: ticket.ended,
     attention: ticket.attention && { ...ticket.attention, question: markdown(ticket.attention.question) },
       assignments: ticket.assignments.length, inputs: ticket.inputs.length, undelivered: ticket.undelivered.length,
-    // Every started Assignment of a Ticket runs in its one shared worker Session.
-    deliveryError: attribute(ticket.delivery?.error), sessionId: ticket.assignments.some(item => item.startedAt)
-      ? workerSessionId(ticket.id) : '',
+    // The Session the worker of the latest started Assignment runs in.
+    deliveryError: attribute(ticket.delivery?.error), sessionId: (() => { const started = [...ticket.assignments].reverse()
+      .find(item => item.startedAt); return started ? assignmentSessionId(ticket.id, started) : '' })(),
     directory: attribute(ticket.execution?.directory), summary: latestReport(ticket)?.summary ?? '', createdAt: ticket.createdAt,
     updatedAt: ticket.updatedAt }
 }

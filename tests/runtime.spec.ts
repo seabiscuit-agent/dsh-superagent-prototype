@@ -687,14 +687,16 @@ it('retries only a failed, blocked or undelivered ticket with a new assignment, 
   expect(runtime.store.tickets.get(ticket.id)!.assignments.map(item => item.state)).toEqual(['ended', 'running'])
   expect(retried.assignments.length).toBeGreaterThan(current.assignments.length)
   expect(retried.assignments.at(-2)!.endedReason).toBe('retried')
-  // The worker's Session holds the assignment, so the new one says only that a person retried it.
-  expect(relays(`worker-${ticket.id}`).at(-1)).toEqual({ ticket_id: ticket.id, assignment: 2, note: expect.stringContaining('A person retried this ticket') })
+  // A person's retry runs in a fresh Session the new Assignment records, so it gets the whole first message again.
+  expect(retried.assignments.at(-1)!.session).toBe(`worker-${ticket.id}-1`)
+  expect(relays(`worker-${ticket.id}-1`).at(-1)).toMatchObject({ ticket_id: ticket.id, title: '修复回归',
+    trigger: expect.objectContaining({ text: '@bot 修一下回归' }), note: expect.stringContaining('A person retried this ticket') })
   // A Session someone deleted gets the whole first message again with the next Assignment.
   runtime.store.atomic(() => { runtime.engine.report(ticket.id, { state: 'failed', summary: 'LlmError: offline' }) })
-  agents.delete(`worker-${ticket.id}`)
+  agents.delete(`worker-${ticket.id}-1`)
   runtime.engine.retryTicket(ticket.id)
   await runtime.idle()
-  expect(relays(`worker-${ticket.id}`).at(-1)).toMatchObject({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ text: '@bot 修一下回归' }) })
+  expect(relays(`worker-${ticket.id}-2`).at(-1)).toMatchObject({ ticket_id: ticket.id, title: '修复回归', trigger: expect.objectContaining({ text: '@bot 修一下回归' }) })
   expect(search(viewsOf(runtime), '修复', new TextCache(0)).tickets).toEqual([expect.objectContaining({ id: ticket.id })])
   expect(decisionList(viewsOf(runtime), [], 0, 10, '2999-01-01T00:00:00Z').items).toEqual([])
   const accepted = runtime.store.read.recentDecisions(0, 1)[0]!
