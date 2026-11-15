@@ -32,47 +32,48 @@
 
 ## 2. 实现 `local` Source kind（后续 Apply 工单，未授权）
 
-- [ ] 2.1 在本仓库新建 `src/sources/local.ts`，声明 `SourceKind`：`kind: 'local'`、
+- [x] 2.1 在本仓库新建 `src/sources/local.ts`，声明 `SourceKind`：`kind: 'local'`、
   schema / fields / health、`policy`（`allowed` 首位 + `explicit`）、`scope`，省略
-  `channel` / `environment` / `refreshLabels`。验证：`node --test` 单测能
+  `environment` / `refreshLabels`（`channel` 按 3.6 / OQ#1 结论改为 no-op channel：
+  `send → 'sent'`，详见 `design.md`）。验证：`node --test` 单测能
   `localKind.schema.parse({})` 并断言 `kind === 'local'`、无 `channel`。
-- [ ] 2.2 `apply` 里 `ctx.effect(() => ctx.orchestrator.sources.register(localKind),
+- [x] 2.2 `apply` 里 `ctx.effect(() => ctx.orchestrator.sources.register(localKind),
   'local: source kind')` 注入 `orchestrator`。验证：`GET sources` 含 `id: "local"` 且
   `state` 为 `ready`（验收项 4）。
-- [ ] 2.3 对每条所有者人消息造确定性 `id = key('local', messageId)`，填
+- [x] 2.3 对每条所有者人消息造确定性 `id = key('local', messageId)`，填
   `source: 'local'`、`human: true`、`addressed: 'direct'`、`actor: {source:'local', id:…}`、
   `threads` 至少一个 `ThreadRef`、`at`、`text`、`meta`。
   验证：同 `messageId` 连发两次 → `Intake.receive` 第二次返回 `'duplicate'`（验收项 8）。
 
 ## 3. 主会话 intake 与授权（后续 Apply 工单，未授权）
 
-- [ ] 3.1 在 `src/app` 组合根（Runtime / `Sessions.install` 附近）装 `session/event`
+- [x] 3.1 在 `src/app` 组合根（Runtime / `Sessions.install` 附近）装 `session/event`
   监听器：只认 `masterId` 会话的 `user/message`，只接 `source.kind === 'user'` /
   `user-rpc`，过滤 `dsh-superagent` 注入；尊重 `quiet` 守卫；不放在 `src/sources`。
   验证：连续注入 20 条 candidate card / notice 后 `GET sources` 的 `local.filtered`
   等于注入数、`GET tickets?state=open` 不变（验收项 9）。
-- [ ] 3.2 把过滤后的消息经 `SourceContext.receive` / `runtime.receive(trigger)` 入域，
+- [x] 3.2 把过滤后的消息经 `SourceContext.receive` / `runtime.receive(trigger)` 入域，
   不新增 Engine 端点、不重入事务里等异步投递。验证：发无 @ 需求后立即出现
   `strength: "explicit"` 候选卡，`GET tickets?state=open` 不变（验收项 6）。
-- [ ] 3.3 把所有者稳定 `actor.id` 预置进 `policy.sources.local.allowed`，`local`
+- [x] 3.3 把所有者稳定 `actor.id` 预置进 `policy.sources.local.allowed`，`local`
   scope 返回 `listened: true`；不改 `eval.mode`，不改 GitHub / Feishu 的 admission 表。
   验证：`GET settings` 的 `policy.sources.local.allowed` 含所有者，且候选 basis 为
   `via: "addressed"`（验收项 5、飞书开启时验收项「旧路径不变」）。
-- [ ] 3.4 在 `prompts/dispatch.md` 加 Apply→accept 段：把「落盘 / Apply」绑到当前未决
+- [x] 3.4 在 `prompts/dispatch.md` 加 Apply→accept 段：把「落盘 / Apply」绑到当前未决
   显式候选的 `trigger_id`，`title` / `worktree_name` / `acknowledgement` 从原候选合成，
   保留「不扩写需求」约束。验证：`GET prompts` 的 `current.config` 含该段（验收项 11）；
   说「落盘」后 `GET tickets?state=open` 新增 running 工单、`GET decisions` 出现
   `accept`（验收项 7）。
-- [ ] 3.5 覆盖不派工路径：只发需求 / 问状态 / 闲聊 / 「先别做」不 accept；显式 hold
+- [x] 3.5 覆盖不派工路径：只发需求 / 问状态 / 闲聊 / 「先别做」不 accept；显式 hold
   未解除时 Apply 不建单；重复 Apply 幂等。验证：`GET decisions` 无对应 `accept`，
   `GET tickets?state=open` 数量不变（验收项 8 与规格失败路径）。
-- [ ] 3.6 解决 Open Question #1（回写通道）：no-op `channel.send` 返回 `'sent'`，或
+- [x] 3.6 解决 Open Question #1（回写通道）：no-op `channel.send` 返回 `'sent'`，或
   `src/app` 的 steering 路径，二选一并把结论写回 `design.md`。
   验证：工单 ready / human_action 时文本出现在主会话同一会话里，而非 Outbox 静默丢弃。
 
 ## 4. 生产验证、配置继承与归档（后续 Apply 工单 / 由人操作）
 
-- [ ] 4.1 解决 Open Question #2（`'local'` 是否进 `sourceSkills` / `composeSkill` /
+- [x] 4.1 解决 Open Question #2（`'local'` 是否进 `sourceSkills` / `composeSkill` /
   `bindSkills` / `SETUP_FIELDS`）与 #3（多张未决候选的关联规则）、#4（GUI 所有者
   `actor.id` 取值），把结论写回 `design.md`。验证：`design.md` 的 Open Questions
   相应条目被删除或标注结论。

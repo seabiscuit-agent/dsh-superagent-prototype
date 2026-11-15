@@ -6,6 +6,9 @@
       name: dsh-superagent
     - id: dsh-superagent-github
       name: dsh-superagent/github-watch
+    # Local Source; registers the main session's GUI so the owner's messages there become candidates.
+    - id: dsh-superagent-local
+      name: dsh-superagent/local-watch
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch

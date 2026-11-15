@@ -1,6 +1,7 @@
 /** Application composition root and lifecycle manager for dsh-superagent. */
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type {} from '@deepseek-ai/dsh-session-persistence'
@@ -35,6 +36,7 @@ import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
 import { eventNotice, followupNotice } from './notices.ts'
 import { pullEndNotices } from '../sources/github-pull.ts'
+import { OWNER, ownerTrigger, SOURCE } from '../sources/local.ts'
 import { HealthBoard } from '../infra/health.ts'
 import { Outbox } from './outbox.ts'
 import { Passes } from './passes.ts'
@@ -111,6 +113,10 @@ export class Runtime extends Service implements SourceHost {
         // Sync source member lists once startup completes when a source plugin loads dynamically.
         if (kind.policy?.sync) void this.ready?.then(() => this.settings.syncable().includes(kind.kind) ? this.settings.sync(kind.kind) : undefined)
           .catch(() => { /* sync() records its failure in health. */ })
+        // The local Source starts listening as soon as it registers: report its intake and preset the owner once setup allows.
+        if (kind.kind === SOURCE) void this.ready?.then(() => this.presetLocalOwner()).catch(error => {
+          ctx.logger.warn('dsh-superagent could not preset the local Source owner: %s', String(error))
+        })
         return () => {}
       })
       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
@@ -164,6 +170,12 @@ export class Runtime extends Service implements SourceHost {
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
+      // The local Source's intake: a person's message in the main session's own GUI enters the domain as an explicit Trigger.
+      // Subscribed here, before anything else, so no message of the main Session is ever missed; plugin deliveries and the
+      // orchestrator's own tool traffic are counted as filtered instead of dispatched (echoes never create candidates).
+      this.ctx.on('session/event', (session, event) => {
+        if (event.type === 'user/message') this.ingestLocal(session, event.data, event.time)
+      })
       this.ready = this.initialize()
     } catch (error) {
       // Release the database and state lock if initialization fails so an in-process restart can reacquire them.
@@ -197,6 +209,47 @@ export class Runtime extends Service implements SourceHost {
   pump(): Promise<void> { return this.passes.pump() }
   sendReplies(): Promise<void> { return this.outbox.sent() }
   private closing(): boolean { return this.closingFlag }
+  /** Counted intake of the local Source, reported on its `local` health entry; zero until the kind registers. */
+  private readonly localIntake = { ingested: 0, filtered: 0 }
+  /**
+   * Feeds one message of the main session's GUI to the local Source. Only a message authored by a person (`source.kind === 'user'`)
+   * outside a main-Session tool run becomes a Trigger; dsh-superagent's own deliveries and the orchestrator's tool traffic are the
+   * session's echoes, counted as filtered and never dispatched. Receiving is synchronous recording plus a scheduled pass, so this
+   * never waits on an async delivery inside the host's event.
+   */
+  private ingestLocal(session: { id: string }, message: UserMessage, at: number): void {
+    if (session.id !== this.masterId || !this.sources.kind(SOURCE)) return
+    if (message.source.kind !== 'user' || this.quiet) { this.localIntake.filtered++; this.noteLocal(); return }
+    const trigger = ownerTrigger(message, this.masterId, at)
+    if (!trigger.text) return
+    this.localIntake.ingested++
+    this.noteLocal()
+    try {
+      this.receive(trigger)
+      // The thread exists once the Trigger is stored; a display label makes the main session recognizable in ticket views.
+      this.store.threads.describe(`local:${this.masterId}`, { label: 'Main session' })
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not receive a main-session message as a local Trigger: %s', String(error))
+    }
+  }
+  /** Reports the local Source's intake on its health entry; no entry exists while the kind is not registered. */
+  private noteLocal(): void {
+    this.sources.healthEntries([SOURCE]).get(SOURCE)?.set({ state: 'ready',
+      detail: `Main-session intake: ${this.localIntake.ingested} ingested, ${this.localIntake.filtered} filtered`, at: now() })
+  }
+  /**
+   * Presets the main-session owner as the local Source's allowed sender once, when that Source's policy section was never
+   * configured, so the owner's GUI messages are explicit with nothing to set up; a later deliberate edit is never overwritten.
+   */
+  private presetLocalOwner(): void {
+    const { store } = this
+    this.noteLocal()
+    if (store.settings().policy.sources[SOURCE] !== undefined) return
+    const policy = store.settings().policy
+    void this.settings.save('policy', { ...policy, sources: { ...policy.sources, [SOURCE]: { allowed: [OWNER] } } },
+      store.blockRevision('policy'), 'sync')
+      .catch(error => { this.ctx.logger.warn('dsh-superagent could not preset the local Source owner: %s', String(error)) })
+  }
   /** Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still record incoming triggers. */
   private paused(): boolean { return !this.setup.configured() || this.store.settings().paused }
   private async initialize(): Promise<void> {
