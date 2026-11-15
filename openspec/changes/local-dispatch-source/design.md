@@ -201,15 +201,43 @@ bundled skill、没有 account-setup `problem`、thread context 可能 `NO_CONTE
   Outbox 静默丢弃（决策 5）。给 `local` 一个 `send` 返回 `'sent'` 的 no-op channel，
   还是在 `src/app` 加一条指向 `sessions.prompt(masterId, ..., 'steer')` 的 steering 路径？
   Apply 前必须定，否则结果到不了人。
+  **Apply 结论（已定）**：给 `local` 一个 no-op channel。`localKind.channel.send`
+  恒返回 `'sent'`，`link` 返回主会话标签；每条 local Trigger 携带
+  `channel: {source:'local', thread:'local:<masterId>', address:{session}}`。理由：
+  `Engine.reply` 的 ack 路径在无 channel 时抛 `ackNoChannel`（`src/core/replies.ts:55`），
+  早于 `takeUp`，会令每个 local 工单的 `orchestrator_ack`（worker 必做）报错；
+  no-op channel 让回执 settle 为 `sent`、`takeUp` 照常记账，零核心改动。落盘确认、
+  ack 与结果文本由主会话助手回合在同一会话里呈现（`prompts/dispatch.md` 的
+  Apply→accept 段要求路由后陈述 acknowledgement），主会话 GUI 即人的会话面；
+  steering 路径被否决——channel 适配层（src/sources）触不到 Sessions（分层），
+  且把 ack 当 steer 注入只会给编排者制造噪音。
 - **#2 skill / setup 名字**：是否把 `'local'` 加进 `sourceSkills` / `composeSkill` /
   `bindSkills` / `SETUP_FIELDS`（决策 6 A），还是接受它无 bundled skill、无 account
   problem、可能 `NO_CONTEXT`（决策 6 B）？影响评估能读多少上下文。
+  **Apply 结论（已定）**：不加（决策 6 B）。local 的 thread 就是主会话自身的对话，
+  编排者天然在上下文里，无需 thread context reader，也无账号可 probe；
+  `sourceSkills` / `composeSkill` / `bindSkills` / `SETUP_FIELDS` 的硬编码保持不变。
 - **#3 「当前未决候选」的关联规则**：当有多张未决候选卡时，主会话凭什么把一句
   「落盘」绑到正确的 `trigger_id`？按最新一张、按文本引用、还是要求确认里带编号？
   这条规则要写进 prompt 且能被 `GET decisions` 核对。
+  **Apply 结论（已定）**：确认绑定它所回答的候选——所有者引用或点名的那张；无法引用
+  且仅剩一张未决时取最新未决卡；多张都可能匹配时先问清是哪张，不全部 accept。
+  已写入 `prompts/dispatch.md` 的 Apply→accept 段，配合既有「accept 幂等于
+  trigger ID」约束。
 - **#4 所有者身份来源**：`policy.sources.local.allowed` 里的 `actor.id` 用 GUI 登录身份
   还是沿用飞书的 `ou_b0cfd…`？它决定 `allowedSender` 的 `sameName` 比较能否命中，
   需在主会话 GUI 上实测一条真实 `user/message` 的 `source` 形状后定。
+  **Apply 结论（已定）**：固定常量 `owner`。实测主会话持久化事件
+  （`~/.dsh/sessions/…/session.v4.jsonl.zstd`，607 条样本）确认 GUI 人的消息
+  `source` 形如 `{kind:'user', rpcId:<uuid>, clientTimeZone}`——没有登录身份字段，
+  proposal 里的 `ou_b0cfd…` 只是示例。GUI 会话即部署所有者的会话，故
+  `actor = {source:'local', id:'owner'}`；runtime 在 `policy.sources.local` 从未配置过
+  （undefined）时一次性预置 `{id:'owner', name:'Owner'}`，之后不再覆盖——所有者
+  日后清空名单是刻意行为，保留。`sameName('owner','owner')` 恒命中，
+  `via:"addressed"` 的 explicit 路径成立。
 - **#5 配置继承**：`source:local` 与 `policy.sources.local` 是否并入 spawner 的
   `settings-template-layer` 模板（本提案只要求，不实现）？若否，新实例仍会缺所有者
   allowed 列表。
+  **Apply 备注**：仍属 spawner 仓库（tasks 4.2，另行工单）。因 Apply 采用
+  「kind 注册即预置 owner」的 runtime 预置，新实例缺模板也不缺所有者——
+  只有刻意清空过的实例需要手工恢复。
