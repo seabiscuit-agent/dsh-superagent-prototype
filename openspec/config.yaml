@@ -1,0 +1,30 @@
+schema: spec-driven
+
+context: |
+  本 openspec/ 目录承载「DSH Super Agent 编排层」的设计提案，被描述的系统就是本仓库
+  dsh-superagent-prototype（宿主实例 superagent :3082 所加载的实现）；提案与实现同仓，
+  便于规格随代码演进。提案（Explore + Propose 阶段）本身是文档，落盘在本仓库的
+  openspec/ 与 docs/notes/ 下，供所有者评审；本阶段不改动任何运行时代码或 UI。
+
+  被描述系统的技术栈：TypeScript / Node.js ESM 插件，Source 通过 SourceKind 扩展，
+  Engine 收 Trigger → Thread → Eval → Ticket → Executor。现状仅有 GitHub 与 Feishu 两个
+  轮询/Webhook Source，开新工单需要 listed 人在飞书群里 @ 机器人（address=mention）。
+  本目录的变更针对「把主会话（orchestrator DSH Session）变成第三个 Source」，属于架构决策。
+
+  写作约定：
+  - 提案与规格用中文描述，代码标识符、字段名与命令保持原样（英文）。
+  - 需求描述可观察的行为，不写实现机制；机制放 design.md 或 tasks.md。
+  - 验收标准必须能在生产实例上复现：给出命令、期望输出或可对比的字段，并点名在哪台实例上看。
+  - 文档类变更无 UI，故不需要截图证据；用 openspec validate --all --strict 作为校验。
+
+rules:
+  specs:
+    - 每条需求一个 SHALL/MUST 行为，且能被外部观察者判定通过或失败
+    - 每条需求至少一个 #### Scenario（四个 #），并覆盖失败路径（来源不可读、重复消息、误触发、被显式停止）
+    - 涉及授权的需求必须说清 address、admission cell 与 strength 的取值
+  tasks:
+    - 每个任务可验证：写明验证命令或可观察结果
+    - 纯文档提案的实施任务也要写明「新会话只读文档能否接手」的验收
+  design:
+    - 决策要写清备选方案与取舍，并诚实标注当前架构下的真实约束与未决问题
+    - 明确区分「被描述系统（本仓库 prototype 的实现）」与「承载提案的文档（openspec/、docs/notes/）」
