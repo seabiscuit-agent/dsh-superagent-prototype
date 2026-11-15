@@ -219,6 +219,8 @@ export interface Assignment {
   id: string
   state: AssignmentState
   createdAt: string
+  /** The worker Session it runs in when a person's retry launched it into a fresh one; absent when it is the Ticket's base worker Session. */
+  session?: string
   startedAt?: string
   endedAt?: string
   endedReason?: string

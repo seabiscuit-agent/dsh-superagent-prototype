@@ -1,7 +1,8 @@
 /** Serves paginated context resources to orchestrator_read so large bodies stay out of model prompts until requested. */
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { UserError, key, latestReport, reached, runningAssignment, threadKey, type Ticket, type Trigger } from '../core/index.ts'
-import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+import { batchOf, inputMessage, triggerMessage } from '../executor/dsh.ts'
+import { assignmentSessionId } from '../core/worker-session.ts'
 import { readGithub } from '../sources/github-read.ts'
 import { feishuReferences, feishuRead } from '../sources/feishu-read.ts'
 import { feishuRef } from '../sources/feishu.ts'
@@ -111,14 +112,17 @@ async function sourcePage(read: Read, source: string, fetch: () => Promise<unkno
 const THREAD_DECISIONS = 5
 const triggerLine = (trigger: Trigger) => ({ trigger_id: trigger.id, actor: trigger.actor.id, human: trigger.human, at: trigger.at,
   preview: preview(trigger.text), chars: trigger.text.length, read: `trigger/${trigger.id}` })
-async function transcript(host: ResourceHost, ticketId: string) {
-  return (await host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
+async function transcript(host: ResourceHost, ticket: Ticket) {
+  // The Session the worker reads and writes now: the running Assignment's, else the latest one that started.
+  const assignment = runningAssignment(ticket) ?? [...ticket.assignments].reverse().find(started => started.startedAt)
+  return (await host.context.sessionController.inspect(assignmentSessionId(ticket.id, assignment) as SessionId)).events
 }
 
 const ROUTES: readonly Route[] = [
   ['tickets', read => {
     const host = main(read), tickets = host.store.tickets.list()
-    const card = (ticket: Ticket) => ({ ...ticketCard(ticket), ...host.sessions.modelRetry(runningAssignment(ticket) && workerSessionId(ticket.id)) })
+    const card = (ticket: Ticket) => { const running = runningAssignment(ticket)
+      return { ...ticketCard(ticket), ...host.sessions.modelRetry(running && assignmentSessionId(ticket.id, running)) } }
     return list(read, (offset, count) => tickets.slice(offset, offset + count).map(card))
   }],
   ['triggers', read => {
@@ -240,7 +244,8 @@ const ROUTES: readonly Route[] = [
     const ticket = host.store.tickets.get(id)
     if (!ticket) throw new UserError('unknownTicket')
     if (section === undefined) {
-      const running = runningAssignment(ticket) && workerSessionId(ticket.id)
+      const assignment = runningAssignment(ticket)
+      const running = assignment && assignmentSessionId(ticket.id, assignment)
       const retry = 'sessions' in host ? (host as MainResourceHost).sessions.modelRetry(running) : {}
       // Merge subscribed threads (including context-only subscriptions) and source-bound threads without duplicates.
       const bound = new Set((ticket.follows ?? []).map(follow => follow.thread))
@@ -269,7 +274,7 @@ const ROUTES: readonly Route[] = [
       if (message === undefined) throw new Error('Unknown ticket input')
       body = message
     } else if (section === 'message' && part && /^\d+$/.test(part)) {
-      const event = (await transcript(host, id))[Number(part)]
+      const event = (await transcript(host, ticket))[Number(part)]
       const entry = event && transcriptEntry(event)
       if (!entry) throw new Error('Unknown transcript entry')
       body = JSON.stringify(entry)
@@ -281,7 +286,7 @@ const ROUTES: readonly Route[] = [
     else if (section === 'assignment') body = ticket.execution?.assignment ?? ''
     else if (section === 'result') body = latestReport(ticket)?.summary ?? ''
     else if (section === 'transcript') {
-      body = (await transcript(host, id)).flatMap((event, index) => {
+      body = (await transcript(host, ticket)).flatMap((event, index) => {
         const entry = transcriptEntry(event)
         const said = entry?.message.content.map(block => block.type === 'text' ? block.text : `[${block.type}]`).join(' ') ?? ''
         return entry ? [{ type: entry.type, preview: preview(said).slice(0, 80), chars: JSON.stringify(entry).length,
@@ -301,7 +306,13 @@ export async function readResource(host: ResourceHost, resource: string, offset:
   const name = resource.replace(/^event\//, 'trigger/').replace(/^task\//, 'ticket/').replace(/^observation\//, 'decision/')
   const route = ROUTES.find(([route]) => route.endsWith('/') ? name.startsWith(route) : name === route)
   if (!route) throw new Error('Unknown context resource')
-  const sessionId = ticketId ? workerSessionId(ticketId) : host.masterId
+  // A ticket's resources bind to the Session its worker reads them in: the running Assignment's, else the latest started one's.
+  let sessionId = host.masterId
+  if (ticketId) {
+    const ticket = host.store.tickets.get(ticketId)
+    const assignment = ticket && (runningAssignment(ticket) ?? [...ticket.assignments].reverse().find(started => started.startedAt))
+    sessionId = assignmentSessionId(ticketId, assignment)
+  }
   const rest = route[0].endsWith('/') ? name.slice(route[0].length) : ''
   return route[1]({ host, resource: name, rest, offset, sessionId, ...limit ? { limit } : {}, ...ticketId ? { ticketId } : {},
     ...signal ? { signal } : {} })

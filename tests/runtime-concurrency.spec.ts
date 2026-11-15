@@ -315,8 +315,11 @@ describe('a worker whose work runs in the background', () => {
     h.runtime.engine.retryTicket(one.ticket.id); await h.runtime.idle()
     await vi.waitFor(() => expect(latestAssignment(ticket())).toMatchObject({ state: 'running' }))
     expect(h.subagents.live(child)).toBe(false)
-    // The second Assignment's turn ends: it is reported waiting.
+    // The second Assignment runs in the fresh Session its retry launched: an idle of the replaced one's drives nothing.
     idle(one.sessionId)
+    await h.runtime.idle()
+    expect(latestAssignment(ticket())?.report?.state).not.toBe('waiting')
+    idle(`${one.sessionId}-1`)
     await vi.waitFor(() => expect(latestAssignment(ticket())?.report?.state).toBe('waiting'))
     expect(ticket().assignments).toHaveLength(2)
   })

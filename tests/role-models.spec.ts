@@ -54,6 +54,32 @@ it.each(['header', 'selection'])('preserves a resumed Session with existing %s',
   await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' })
   expect(resolve).not.toHaveBeenCalled()
 })
+it('corrects a worker Session to the executor model on every launch, appending only a changed selection', async () => {
+  const { ctx, agent, resolve, request } = await fixture()
+  const previous = { provider: 'old', model: 'one' }
+  agent.session.append('model/selection', previous)
+  // A worker launch overrides the stale selection with the executor's configured model.
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' }, true)
+  expect(resolve).toHaveBeenCalledOnce()
+  expect(agent.session.snapshotEvents().filter(event => event.type === 'model/selection').map(event => event.data))
+    .toEqual([previous, { provider: 'worker', model: 'new' }])
+  await ctx.systemPrompt.assemble()
+  expect(await request()).toEqual({ provider: 'worker', model: 'new' })
+  // A later launch with the same configuration appends nothing, and still seeds the request.
+  resolve.mockClear()
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' }, true)
+  expect(resolve).not.toHaveBeenCalled()
+  expect(agent.session.snapshotEvents().filter(event => event.type === 'model/selection')).toHaveLength(2)
+  await ctx.systemPrompt.assemble()
+  expect(await request()).toEqual({ provider: 'worker', model: 'new' })
+})
+it('corrects a worker Session past a persisted request header', async () => {
+  const { ctx, agent, request } = await fixture()
+  agent.session.append('request/header', { header: { config: { provider: 'old', model: 'one' } }, reason: 'initial' })
+  await initializeRoleModel(ctx, agent, { provider: 'worker', model: 'new' }, true)
+  await ctx.systemPrompt.assemble()
+  expect(await request()).toEqual({ provider: 'worker', model: 'new' })
+})
 it('inherits the host when unset and fails unavailable routes before recording a selection', async () => {
   const { ctx, agent, resolve, request } = await fixture()
   await initializeRoleModel(ctx, agent, null)

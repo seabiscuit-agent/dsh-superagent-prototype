@@ -1176,6 +1176,25 @@ describe('retry after a failed delivery', () => {
     expect(retried.undelivered).toHaveLength(1)
   })
 })
+describe('worker sessions across assignments', () => {
+  it("records the fresh Session a person's retry runs in; resumed work and later retries keep or remake their own", () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    // The Ticket's first Assignment runs in the base worker Session, which needs no field of its own.
+    expect(h.repo.tickets.get(ticketId)!.assignments.at(-1)).not.toHaveProperty('session')
+    h.engine.report(ticketId, { state: 'failed', summary: 'tests fail' })
+    const retried = h.engine.retryTicket(ticketId)
+    expect(retried.assignments.at(-1)).toMatchObject({ session: `worker-${ticketId}-1` })
+    // A ticket a person's follow-up resumed keeps the Session that retry launched: the worker's context carries over.
+    h.engine.report(ticketId, { state: 'ready', summary: 'Done' }); h.settle()
+    h.tick(5); h.engine.receive(trigger('2')); h.pump()
+    expect(h.repo.tickets.get(ticketId)!.assignments.at(-1)).toMatchObject({ session: `worker-${ticketId}-1` })
+    // A second retry starts over in another fresh Session, numbered by Assignment, not by retry.
+    h.engine.report(ticketId, { state: 'failed', summary: 'regressed' })
+    const again = h.engine.retryTicket(ticketId)
+    expect(again.assignments.at(-1)).toMatchObject({ session: `worker-${ticketId}-3` })
+  })
+})
 describe('Evals across Policy versions, revoked Mandates and mixed batches', () => {
   it('queues an Eval\'s batch again when it is decided under an older Policy, such as after an upgrade changed the version', () => {
     const h = harness()
