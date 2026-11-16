@@ -1,0 +1,2 @@
+# grep for each ack text in the master session history dir (before fix):
+(no matches: none of the 'sent' receipt texts exist in the master session history)
