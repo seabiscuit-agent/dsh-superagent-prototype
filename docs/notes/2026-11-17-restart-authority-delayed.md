@@ -19,8 +19,10 @@
   执行前先清 pending（进程死掉也不会重放），apply 失败则恢复 pending 并重试；`cancel()` 撤回。
   请求只在内存里：进程重启本身就满足请求，插件重启则丢弃，由主会话重问。
 - `src/app/restart-panel.ts`：`restartViaPanel()` 先 `GET ?action=list` 找到自己的行，再让
-  `self !== true` 的 peer 面板 `POST ?action=restart&name=<自己>`（202 即接受）。面板永远不重启
-  自己那一行，单实例部署没有 peer，报错交给人工。
+  `self !== true` 的 peer 面板 `POST ?action=restart&name=<自己>`（202 即接受）。peer 全拒或不存在
+  时，只有在 `host.selfRestart === true` 的**新版** spawner 面板上才向自己发同一个请求：面板用
+  detached 助手（`lib/self-restart.js`）先优雅停止、等进程退出、再用原命令拉起，202 先回。旧面板
+  会停掉自己而不再拉起，所以没有能力位就绝不发，报错并留给人工。
 - `src/app/tools/main.ts`：新增 `orchestrator_restart`（只注册给主会话，`cancel: true` 撤回），
   并修复 `orchestrator_settings_save` 把 JSON 字符串当对象传下去报
   `expected object, received string` 的问题（`settingsValue()` 先 parse，非 JSON 给明确错误）。
@@ -46,4 +48,4 @@ npx vitest run tests/restart-queue.spec.ts tests/restart-guard.spec.ts tests/res
 env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v node)")" npx vitest run
 ```
 
-相关：`docs/003-execution.md`（Restarting the instance）、`docs/006-deployment.md`（重启权与 peer 面板）。
+相关：`docs/003-execution.md`（Restarting the instance）、`docs/006-deployment.md`（重启权与面板）。
