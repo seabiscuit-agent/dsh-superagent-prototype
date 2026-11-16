@@ -1,0 +1,6 @@
+# symlink: ../../../../Documents/workspace/dsh-superagent-prototype
+# checkout HEAD: fa93190459430567cdd6139041a4377e9dfa80ea (feat(outbox): render local receipts into the main session as notice rows)
+# built lib contains renderLocal wiring (grep -c 'local-receipt:' lib/index.js): 1
+# live GET /orchestrator/api/prompts contains new dispatch wording 'notice rows on delivery': True
+# old wording 'no separate channel: state the acknowledgement after routing' absent: True
+# scripts/dsh-superagent status exit: 0 (runtime/relay/notice/launch/delivery/assessment/reply/evals/models/local all ready; github starting is transient boot recovery; feishu paused by prior operator decision)
