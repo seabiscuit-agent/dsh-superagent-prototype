@@ -274,6 +274,22 @@ it('saves a settings block by name, a Source\'s block with the Source\'s id', as
   expect(await save({ block: 'pause', value: { paused: true }, revision: 0 })).toEqual({ paused: true })
 })
 
+it('parses a settings block a main Session sent as a JSON string, and refuses one that is not JSON', async () => {
+  const save = (args: Record<string, unknown>) => h.runTool(h.runtime.masterId, 'orchestrator_settings_save', args)
+  expect(await save({ block: 'pause', value: '{"paused":true}', revision: 0 })).toEqual({ paused: true })
+  expect(h.runtime.store.settings().paused).toBe(true)
+  const evaluation = h.runtime.store.settings().eval
+  await save({ block: 'eval', value: JSON.stringify({ ...evaluation, mode: 'observe' }), revision: h.runtime.store.blockRevision('eval') })
+  expect(h.runtime.store.settings().eval.mode).toBe('observe')
+  await expect(save({ block: 'pause', value: '{paused', revision: 0 })).rejects.toThrow('not JSON')
+})
+
+it('gives the main Session the restart tool and gives no worker one', async () => {
+  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  expect(h.tools.get(h.runtime.masterId)!.has('orchestrator_restart')).toBe(true)
+  expect(h.tools.get(`worker-${ticket.id}`)!.has('orchestrator_restart')).toBe(false)
+})
+
 it('previews a prompt configuration without saving it, and saves one only against the revision it edits', async () => {
   const save = (args: Record<string, unknown>) => h.runTool(h.runtime.masterId, 'orchestrator_prompts_save', args)
   const config = { ...h.runtime.prompts.current().config, scope: 'Finish what was asked.' }

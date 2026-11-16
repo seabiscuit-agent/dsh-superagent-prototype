@@ -44,6 +44,14 @@ When an Assignment ends, its shell jobs are killed without waking the Session. I
 
 Stopping or restarting the plugin inside the DeepSeek Harness process uses the same shutdown path. Inputs not yet taken into Session history are retained. Shutdown waits up to 10 seconds for each worker's background work; a process restart ends that work outright. An Assignment interrupted while busy restarts with a recovery note. The main Session's turn gets the same treatment: the restart resumes it with a note that asks it to check what already happened outside before repeating anything.
 
+### Restarting the instance
+
+Only the main Session may restart the DSH instance. Its `orchestrator_restart` tool is not registered for Executor Sessions, and a worker's shell command that would end or replace the host process is refused: tmux pane or session control, killing the DSH or node process, a service manager, the spawner panel's `restart`, `stop` or `start` action, and the deployment's `scripts/dsh-superagent` manager. A worker that needs a restart reports the need instead.
+
+A restart interrupts every worker turn it finds running, so the request is delayed: while a worker runs or a Ticket waits for a worker slot, it stays pending, checked every five seconds, and is applied the first time the instance is idle. Asking again returns the pending request; `cancel: true` withdraws it. The request lives in memory: a process restart satisfies it, and a plugin restart drops it, so the main Session asks again instead of the instance restarting twice for one request.
+
+The restart goes through a peer `dsh-superagent-spawner` panel on loopback, the same `POST ?action=restart` a person clicks. A panel restarts another instance and never its own row, so the instance needs a peer panel that can restart it; in a single-instance deployment the tool reports that no peer can, and a person restarts it.
+
 Worker subagents, including nested ones, use DeepSeek Harness's `standard` preset with the worker's permissions. They retain only the worker's allowed work tools, and lose those tools when the Ticket ends. Under `standard`, a shell command moves to the background after 60 seconds. A subagent's jobs are killed when it ends.
 
 ### Preparing a Ticket directory

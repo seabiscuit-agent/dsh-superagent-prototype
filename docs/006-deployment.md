@@ -164,6 +164,8 @@ Send requests to `http://127.0.0.1:<port>/orchestrator/api/` with `x-orchestrato
 
 API saves have the panel's permissions. They can change execution environment and setup account fields, unlike saves made through the main Session's tools.
 
+Only the main Session may restart an instance, through its `orchestrator_restart` tool: worker Sessions have no such tool and their shell refuses commands that would end or replace the host process. A restart waits until no worker runs and no Ticket waits for a slot, then asks a peer `dsh-superagent-spawner` panel to restart this instance, because a panel never restarts its own row. Keep a peer instance, or a person, able to restart one that runs alone; the tool reports when no peer panel accepts. See [003 Execution](003-execution.md) for the delay and the shell guard.
+
 Agents may rely on these routes and fields. The other routes in `src/app/api.ts` serve the panel and change with it.
 
 | Request | Answer |

@@ -12,6 +12,7 @@ import type { HealthEntry } from '../infra/health.ts'
 import { AgentDelivery, messageId } from './delivery.ts'
 import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
+import { restartCommand } from './restart-guard.ts'
 import { RetryHealth } from './retry-health.ts'
 import { initializeRoleModel } from './role-models.ts'
 import { bundledSkills } from './skill-files.ts'
@@ -310,9 +311,11 @@ export class Sessions {
     const parent = scopeParentOf(agent)
     // The work tools plus the host's compression tools: masking `compress` makes the plugin stop folding this history.
     const allow = [...WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent)), ...compressionTools(agent)]
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(execution => {
       const current = store.tickets.get(ticketId)
-      return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
+      if (!current || !liveTicket(current)) return 'Ticket ended; new work needs a new authorized ticket'
+      // A restart of the host ends this worker too, and the other workers' turns: only the main Session may ask for one.
+      return restartCommand(execution)
     })]
   }
   /**
