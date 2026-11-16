@@ -5,10 +5,11 @@ export const RESTART_REFUSAL = 'Restarting the DSH host is reserved for the main
 
 /**
  * A simple command's start: the line's start or an operator (`;`, `&&`, a pipe, `(`, a newline), optional `NAME=value`
- * assignments and the prefixes that run a command (`sudo`, `nohup`, `env`, …). Matching from here keeps a command quoted in
- * a message, a grep pattern or a commit text from being refused, while the command itself, in whatever directory, is.
+ * assignments and the prefixes that run a command (`sudo`, `nohup`, `env`, …) — including a shell entered with `-c`, so
+ * `bash -c 'tmux respawn-pane -k …'` is refused like the bare command. Matching from here keeps a command quoted in a
+ * message, a grep pattern or a commit text from being refused, while the command itself, in whatever directory, is.
  */
-const start = String.raw`(?:^|[\n;|&(){}])\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"\n]*"|'[^'\n]*'|\S*)\s+)*(?:(?:sudo|nohup|exec|env|command|time|builtin)\s+)*`
+const start = String.raw`(?:^|[\n;|&(){}])\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"\n]*"|'[^'\n]*'|\S*)\s+)*(?:(?:(?:sudo|nohup|exec|env|command|time|builtin)\s+)|(?:(?:sh|bash|zsh|dash)\s+-[A-Za-z]*c\s+['"]?))*`
 const at = (body: string) => new RegExp(`${start}${body}`, 'i')
 
 /**

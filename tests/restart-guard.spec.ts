@@ -17,6 +17,8 @@ it('refuses the commands that restart or end the host process, through tmux, kil
     'systemctl restart dsh-superagent',
     `curl -X POST 'http://127.0.0.1:3150/dsh-superagent-spawner/api?action=restart&name=superagent' -H 'x-spawner-request: 1'`,
     'scripts/dsh-superagent --profile superagent restart',
+    "bash -c 'tmux respawn-pane -k -t dsh-superagent-spawner'",
+    `sh -lc "kill -9 $(pgrep -f 'dsh --profile superagent')"`,
   ]) expect(bash(command), command).toBe(RESTART_REFUSAL)
 })
 
@@ -30,6 +32,7 @@ it('allows the ordinary commands a worker runs, including reading about restarts
     'cat scripts/dsh-superagent',
     "curl -s 'http://127.0.0.1:3150/dsh-superagent-spawner/api?action=list' -H 'x-spawner-request: 1'",
     'node --test test/*.test.js',
+    'bash -c "npm test"',
   ]) expect(bash(command), command).toBeUndefined()
 })
 
