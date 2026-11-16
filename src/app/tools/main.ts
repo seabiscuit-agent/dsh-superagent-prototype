@@ -286,7 +286,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_restart',
-      description: 'Restart this DSH instance gracefully through a peer spawner panel. Only the main Session may restart it; a worker must report the need. The restart waits until no worker runs and no ticket waits for a slot, because a restart interrupts their turns: ask again to read the pending request, or pass cancel to withdraw it.',
+      description: 'Restart this DSH instance gracefully through a spawner panel: a peer normally, or this instance\'s own panel when it advertises self-restart. Only the main Session may restart it; a worker must report the need. The restart waits until no worker runs and no ticket waits for a slot, because a restart interrupts their turns: ask again to read the pending request, or pass cancel to withdraw it.',
       schema: z.object({
         reason: z.string().trim().max(200).optional().describe('Why the restart is needed; kept with the pending request.'),
         cancel: z.boolean().default(false).describe('Withdraw a pending restart instead of asking for one.'),
