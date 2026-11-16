@@ -42,7 +42,7 @@ A person can also start a turn by writing directly in the Executor Session. Its 
 
 When an Assignment ends, its shell jobs are killed without waking the Session. Its subagents are released, and any completion turns they wake are dropped. The replacement Assignment and its waiting Inputs start after that shutdown finishes.
 
-Stopping or restarting the plugin inside the DeepSeek Harness process uses the same shutdown path. Inputs not yet taken into Session history are retained. Shutdown waits up to 10 seconds for each worker's background work; a process restart ends that work outright. An Assignment interrupted while busy restarts with a recovery note.
+Stopping or restarting the plugin inside the DeepSeek Harness process uses the same shutdown path. Inputs not yet taken into Session history are retained. Shutdown waits up to 10 seconds for each worker's background work; a process restart ends that work outright. An Assignment interrupted while busy restarts with a recovery note. The main Session's turn gets the same treatment: the restart resumes it with a note that asks it to check what already happened outside before repeating anything.
 
 Worker subagents, including nested ones, use DeepSeek Harness's `standard` preset with the worker's permissions. They retain only the worker's allowed work tools, and lose those tools when the Ticket ends. Under `standard`, a shell command moves to the background after 60 seconds. A subagent's jobs are killed when it ends.
 
@@ -144,6 +144,8 @@ The Executor model applies only when a Session is created; an existing Session k
 ### Restart
 
 Running Assignments end with "host restarted" and new ones start with a recovery note that tells the Executor to check its directory, git history and GitHub before repeating any outside action, oldest Ticket first.
+
+The main Session's turn a restart cut off resumes on the next start with a note that asks it to check the open Tickets, their latest Reports, pending replies and what already reached a person or a repository before acting. A turn that completed, failed or that a person stopped stays as it is: a stop records the turn it stops, so a restart resumes only the turn the plugin's own shutdown cut, never one a person stopped.
 
 Assignments that are waiting, ready, blocked or failed stay as they are, unless an Input reached them after that Report, in which case they start again too.
 

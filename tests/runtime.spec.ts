@@ -118,6 +118,12 @@ let deliveries: ReturnType<typeof vi.fn<(request: { sessionId: string; mode: 'qu
 const relays = (sessionId: string) => deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === sessionId).map(call => {
   try { return JSON.parse(call.text) as Record<string, unknown> } catch { return { text: call.text } as Record<string, unknown> }
 })
+/** Appends a turn-lifecycle event to the main Session's fake event log, as DSH's own agent loop does. */
+const appendMaster = (type: 'turn/start' | 'turn/end', data: unknown): void => {
+  (agents.get(runtime.masterId) as unknown as { session: { append(type: string, data: unknown): void } }).session.append(type, data)
+}
+/** Messages the main Session received, without the worker turns and notices a start can also deliver. */
+const masterDeliveries = () => deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === runtime.masterId)
 const MEMBER = 'ou_alice'
 const CHAT = 'oc_team'
 function feishu(id: string, text: string, overrides: Record<string, unknown> = {}): Trigger {
@@ -1006,6 +1012,37 @@ it('waits for setup when the shim directory holds a file dsh-superagent did not 
   expect(next.setupProblem).toMatchObject({ place: 'deployment', code: 'foreignFile', values: { file: join(directory, 'worker-bin', 'my-script') } })
   expect(readFileSync(join(directory, 'worker-bin', 'my-script'), 'utf8')).toBe('#!/bin/sh\n')
   await next.stop()
+})
+
+it('resumes the main-session turn a crash cut off, without the person sending it again', async () => {
+  appendMaster('turn/start', { turn: 7 })
+  appendMaster('turn/end', { turn: 7, reason: { kind: 'interrupted' } })
+  await (await restart()).ready
+  await vi.waitFor(() => expect(masterDeliveries()).toHaveLength(1))
+  expect(masterDeliveries()).toEqual([expect.objectContaining({ sessionId: runtime.masterId, mode: 'steer', id: runtime.sessions.promptedId('restart-recovery:7') })])
+  expect(masterDeliveries()[0]!.text).toContain('Do not repeat an outside action')
+  expect(masterDeliveries()[0]!.text).toContain('tell the person it was for, in one line, what resumed')
+  expect(runtime.store.get(KV.runtime.shutdownTurn)).toBeUndefined()
+})
+
+it('resumes the main-session turn a graceful stop cut off and clears the turn it recorded', async () => {
+  // The fake agent never appends the aborting turn/end, so the open turn plus the stop's recorded turn identify it.
+  appendMaster('turn/start', { turn: 9 })
+  await (await restart()).ready
+  await vi.waitFor(() => expect(masterDeliveries()).toHaveLength(1))
+  expect(masterDeliveries()).toEqual([expect.objectContaining({ mode: 'steer', id: runtime.sessions.promptedId('restart-recovery:9') })])
+  await vi.waitFor(() => expect(runtime.store.get(KV.runtime.shutdownTurn)).toBeUndefined())
+})
+
+it('leaves a main-session turn that completed or that a person stopped alone', async () => {
+  appendMaster('turn/start', { turn: 10 })
+  appendMaster('turn/end', { turn: 10, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  await (await restart()).ready
+  expect(masterDeliveries()).toEqual([])
+  appendMaster('turn/start', { turn: 11 })
+  appendMaster('turn/end', { turn: 11, reason: { kind: 'completed' } })
+  await (await restart()).ready
+  expect(masterDeliveries()).toEqual([])
 })
 
 it('rewrites the blocked-command shims when the Executor settings change them, without a restart', async () => {

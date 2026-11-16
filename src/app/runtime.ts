@@ -43,6 +43,7 @@ import { Passes } from './passes.ts'
 import { Setup } from './setup.ts'
 import { feishuSettings } from '../sources/feishu.ts'
 import { health, type Health, type SourceContext, type SourceHost } from '../sources/host.ts'
+import { cutTurn, markShutdownTurn, recoveryNote, type RestartTurnEvent, type ShutdownTurn } from './restart-recovery.ts'
 import { Sessions } from './sessions.ts'
 import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
@@ -270,7 +271,28 @@ export class Runtime extends Service implements SourceHost {
     this.executor.resume()
     this.passes.start()
     this.effects.start()
+    this.resumeMaster()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
+  }
+  /**
+   * Resumes the main-Session turn a restart cut off, so the person whose request was running does not have to send it again.
+   * A paused instance keeps the shutdown marker and resumes on the next start; a delivery failure is logged and leaves
+   * the marker (a crash-cut turn is detected again anyway) so readiness never depends on the recovery.
+   */
+  private resumeMaster(): void {
+    const agent = this.ctx.agents.get(this.masterId as SessionId)
+    if (!agent) return
+    const marker = this.store.get(KV.runtime.shutdownTurn)
+    const shutdown = marker?.session === this.masterId ? marker : undefined
+    const turn = cutTurn(agent.session.snapshotEvents() as readonly RestartTurnEvent[], shutdown)
+    if (this.paused() || agent.status !== 'idle') return
+    if (turn === undefined) {
+      if (marker) this.store.delete(KV.runtime.shutdownTurn)
+      return
+    }
+    void this.sessions.prompt(this.masterId, `restart-recovery:${turn}`, recoveryNote(), 'steer').then(
+      () => this.store.delete(KV.runtime.shutdownTurn),
+      error => this.ctx.logger.warn('dsh-superagent could not resume main-session turn %s after a restart: %s', turn, String(error)))
   }
   private httpHost(): HttpHost {
     const runtime = this
@@ -290,6 +312,9 @@ export class Runtime extends Service implements SourceHost {
       const ids = [this.masterId, ...new Set(this.store.tickets.list()
         .flatMap(ticket => ticket.assignments.map(assignment => assignmentSessionId(ticket.id, assignment))))]
       const agents = ids.map(id => this.ctx.agents.get(id as SessionId)).filter((agent): agent is Agent => agent !== undefined)
+      // Record the main-Session turn this stop is about to cut, before cancelling it, so the next start resumes exactly that turn and never a turn a person stopped.
+      const master = this.ctx.agents.get(this.masterId as SessionId)
+      if (master) markShutdownTurn(this.store, this.masterId, master.session.snapshotEvents() as readonly RestartTurnEvent[])
       for (const agent of agents) agent.cancel({ kind: 'user' }, { keepInbox: true })
       await Promise.allSettled([passes, this.effects.drain(), ...agents.map(agent => agent.whenIdle())])
       // The workers' jobs and subagents stop too: their ends would start worker turns without the tool limits released below.
