@@ -20,7 +20,7 @@ export type LocalConfig = z.infer<typeof LocalConfigSchema>
 
 /** Deterministic trigger ID for one main-session message; every replay of that message produces the same ID. */
 export const localTriggerId = (messageId: string): string => key('local', messageId)
-/** Constructs the local reply channel: the main session's own conversation, which needs no outbound delivery. */
+/** Constructs the local reply channel: the main session's own conversation, into which the Outbox renders receipts directly. */
 export const localChannel = (sessionId: string): ChannelRef =>
   ({ source: SOURCE, thread: `local:${sessionId}`, address: { session: sessionId } })
 
@@ -46,16 +46,16 @@ export function ownerTrigger(message: UserMessage, masterId: string, at: number)
 /**
  * The local Source. The runtime's `session/event` listener feeds it (see `Runtime`): a person's message in the main session's GUI
  * is already addressed to the orchestrator, so it enters as an explicit candidate once the owner is in `allowed` — no @ and no
- * button. Its channel is a no-op: replies, acknowledgements and answers reach the person as the main session's own conversation,
- * while receipts settle so the mandated worker acknowledgement stays satisfiable.
+ * button. The Outbox renders its receipts into the main session itself as notice rows (see `Outbox.deliver`), so replies,
+ * acknowledgements and answers appear in the panel; the channel's no-op `send` only settles receipts for hosts that skip rendering.
  */
 export const localKind: SourceKind<LocalConfig> = {
   kind: SOURCE,
   title: { zh: '主会话', en: 'Main session' },
   description: {
-    zh: '主会话 GUI 本身作为来源：所有者在这个会话里发的消息直接成为派单候选，无需 @ 或按钮。回复和确认也在同一会话里。',
+    zh: '主会话 GUI 本身作为来源：所有者在这个会话里发的消息直接成为派单候选，无需 @ 或按钮。回复和确认会渲染回同一会话的通知行。',
     en: "The main-session GUI itself as a Source: the owner's messages in that conversation become dispatch candidates directly, "
-      + 'with no @ and no button. Replies and confirmations live in the same conversation.',
+      + 'with no @ and no button. Replies and confirmations render back into the same conversation as notice rows.',
   },
   schema: LocalConfigSchema,
   fields: [],

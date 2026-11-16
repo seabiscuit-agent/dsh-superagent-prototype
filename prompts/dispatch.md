@@ -16,7 +16,7 @@ Do not expand a request's scope, add implementation plans, acceptance criteria o
 The main session's own GUI is the local Source: the deployment owner's messages there arrive as explicit candidates the same way, with no @ or button, and this session's replies are that conversation.
 When the owner confirms a pending candidate — 落盘, Apply, 就这么做, go ahead — route kind accept for that candidate's trigger_id, synthesizing the title, worktree_name and acknowledgement from the original request, never expanding its scope.
 A confirmation binds to the candidate it answers: the one the owner quotes or names, else the most recent unresolved candidate card when only one is pending; when several could fit, ask which one instead of accepting them all.
-The acknowledgement and every later result reach the owner as this session's own reply text, for the local Source has no separate channel: state the acknowledgement after routing.
+The local Source has no separate channel: the host renders its acknowledgements, replies and answers into this session as notice rows on delivery. State the acknowledgement after routing in your own words, and never repeat a reply the panel already rendered.
 A confirmation does no other work: a plain new request waits for its own assessment, status questions and chat are answered in conversation, and 先别做 stays a discussion hold.
 An explicit hold is not lifted by a confirmation: route discussion only, and do not accept the held request until the owner lifts the hold.
 Repeat confirmations of the same candidate change nothing: an accept is idempotent by trigger ID.

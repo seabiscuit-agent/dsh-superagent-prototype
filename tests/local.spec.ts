@@ -1,12 +1,18 @@
-/** The local Source: the main session's GUI as a dispatch origin, its intake filters, and its no-op reply channel. */
+/** The local Source: the main session's GUI as a dispatch origin, its intake filters, and its receipts rendering into that session. */
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { Commands } from '../src/infra/commands.ts'
 import { key } from '../src/core/index.ts'
-import { apply as applyLocal, localKind, localTriggerId, ownerTrigger, OWNER, SOURCE } from '../src/sources/local.ts'
+import { apply as applyLocal, localChannel, localKind, localTriggerId, ownerTrigger, OWNER, SOURCE } from '../src/sources/local.ts'
 import { startRuntime, type Host } from './fixtures/host.ts'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 beforeEach(() => { vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [], has_more: false }) })
+
+/** Advances time past the reply effect's retry delay and drains delivery, as outbox.spec does. */
+async function at(host: Host, ms: number) {
+  vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + ms })
+  try { await host.runtime.pump(); await host.runtime.sendReplies() } finally { vi.useRealTimers() }
+}
 
 /** A person's message as the main-session GUI persists it. */
 const guiMessage = (text: string): UserMessage =>
@@ -30,7 +36,7 @@ async function localHost() {
   return host
 }
 
-it('declares the local kind, an empty config, and a no-op channel', async () => {
+it('declares the local kind, an empty config, and a settling channel', async () => {
   expect(localKind.kind).toBe('local')
   expect(localKind.schema.parse({ })).toEqual({})
   expect(localKind.health).toEqual(['local'])
@@ -119,7 +125,7 @@ it('ignores messages of other sessions and messages while a main-Session tool ru
   } finally { await host.stop() }
 })
 
-it('accepts a local candidate into a running ticket over the no-op channel, idempotently', async () => {
+it('accepts a local candidate and renders the acknowledgement into the main session as a notice row, idempotently', async () => {
   const host = await localHost()
   try {
     const message = guiMessage('Rename the Save button to Submit')
@@ -134,14 +140,59 @@ it('accepts a local candidate into a running ticket over the no-op channel, idem
       mandate: { strength: 'explicit', basis: expect.objectContaining({ via: 'addressed', source: 'local', sender: 'Owner', addressed: 'direct' }) },
       origin: { triggerId: triggerId } })
     expect(ticket.assignments).toEqual([expect.objectContaining({ state: 'running' })])
-    // The no-op channel settles the accept-time acknowledgement without any outbound CLI call (startup member sync excluded).
+    // The local channel renders the accept-time acknowledgement into the main session itself, with no outbound CLI call (startup member sync excluded).
     expect(host.runtime.store.replyStatus(key('ack', triggerId))).toBe('sent')
     expect(vi.mocked(Commands.prototype.lark).mock.calls.filter(([args]) => args[1] === '+messages-reply')).toEqual([])
+    const master = host.agents.get(host.runtime.masterId)!
+    const ack = master.inject.mock.calls.map(([injected]) => injected)
+      .find((injected) => injected.id === host.runtime.sessions.promptedId(`local-receipt:${key('ack', triggerId)}`))
+    expect(ack).toMatchObject({ role: 'user', source: { kind: 'dsh-superagent', form: 'notice' } })
+    expect(ack!.source).toMatchObject({ summary: `Acknowledgement for ticket ${ticket.id}: On it: renaming the Save button to Submit.` })
     // Repeating the confirmation is idempotent: the same ticket, and no second one.
     const again = await host.route({ kind: 'accept', trigger_id: triggerId, title: 'Rename the save button',
       worktree_name: 'rename-save', acknowledgement: 'On it: renaming the Save button to Submit.' })
     expect((again.ticket as { ticket_id: string }).ticket_id).toBe(ticket.id)
     expect(host.runtime.store.tickets.open()).toHaveLength(1)
+  } finally { await host.stop() }
+})
+
+it('renders a local result reply into the main session as a notice row', async () => {
+  const host = await localHost()
+  try {
+    const message = guiMessage('Ship the dark-mode toggle')
+    emitMessage(host, host.runtime.masterId, message)
+    await host.runtime.idle()
+    const triggerId = localTriggerId(message.id)
+    const result = await host.route({ kind: 'accept', trigger_id: triggerId, title: 'Ship the dark mode toggle',
+      worktree_name: 'dark-mode', acknowledgement: 'On it: shipping the dark-mode toggle.' })
+    await host.runtime.idle()
+    const ticketId = (result.ticket as { ticket_id: string }).ticket_id
+    await host.runTool(`worker-${ticketId}`, 'orchestrator_report', { state: 'ready', summary: 'Done.' })
+    const sent = await host.runTool(host.runtime.masterId, 'orchestrator_reply',
+      { purpose: 'result', ticket_id: ticketId, text: 'Submitted PR #9, ready for review.' }) as { status: string }
+    expect(sent.status).toBe('sent')
+    const master = host.agents.get(host.runtime.masterId)!
+    const summaries = master.inject.mock.calls.map(([injected]) => (injected.source as { summary?: string } | undefined)?.summary ?? '')
+    expect(summaries).toContain(`Reply for ticket ${ticketId}: Submitted PR #9, ready for review.`)
+  } finally { await host.stop() }
+})
+
+it('waits with a local receipt while the main session is away, and renders it once the session returns', async () => {
+  const host = await localHost()
+  try {
+    host.agents.delete(host.runtime.masterId)
+    host.runtime.outbox.send({ id: 'away-1', channel: localChannel(host.runtime.masterId),
+      text: 'Back online with the result.', kind: 'reply', ticketId: 't-away' })
+    await host.runtime.sendReplies()
+    expect(host.runtime.outbox.status('away-1')).toBe('pending')
+    await host.controller.create({ sessionId: host.runtime.masterId })
+    // The failed render retries after the reply effect's five-second delay.
+    await at(host, 5000)
+    expect(host.runtime.outbox.status('away-1')).toBe('sent')
+    const master = host.agents.get(host.runtime.masterId)!
+    const notice = master.inject.mock.calls.map(([injected]) => injected)
+      .find((injected) => (injected.source as { summary?: string } | undefined)?.summary?.includes('Back online with the result.'))
+    expect(notice).toMatchObject({ role: 'user', source: { kind: 'dsh-superagent', form: 'notice' } })
   } finally { await host.stop() }
 })
 

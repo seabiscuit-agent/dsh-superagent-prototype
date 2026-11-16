@@ -1,0 +1,6 @@
+bd1b634a8a36cef344ad2ac341c76826|local:orchestrator-066e68821adf969eb958fa0bc94e1d13|sent|acknowledgement|开单：补齐 local-dispatch-source 剩余任务（4.2–4.5：设置模板层接入本地 source、生产验收、归档），并做新实例出厂完整性核对。
+11af70308cac9b8ca667cbbcfc9005e7|local:orchestrator-066e68821adf969eb958fa0bc94e1d13|sent|acknowledgement|收到，继续推进：核对 PR #14 合并状态与宿主重启进度，重启生效后跑 4.4 生产验收与出厂核对。
+1e2e61f0c06def3f9deee968236434f2|local:orchestrator-066e68821adf969eb958fa0bc94e1d13|sent|acknowledgement|在查：先看宿主日志与编排器最近的报错记录，定位刚才那个错误的来源和堆栈。
+ab160ba5a1b59f40a3c4de259e9302c1|local:orchestrator-066e68821adf969eb958fa0bc94e1d13|sent|acknowledgement|在查：检查 3150 实例的主会话/执行器提示词与模板初始化情况，并从它的编排状态定位「worker 结果不主动汇总汇报」的原因。只读排查，不动它的运行状态。
+1c4bcadd4d7330fc15b8ef7a7b312381|local:orchestrator-066e68821adf969eb958fa0bc94e1d13|sent|acknowledgement|收到：按建议开 openspec change 修 local 渠道投递——出站回执真正渲染进主会话，不再依赖模型自觉写轮次。
+f2c676fbcf63888f9729937915284b99|local:orchestrator-066e68821adf969eb958fa0bc94e1d13|sent|acknowledgement|开单：先判定这是 superagent 自身缺口还是插件实现缺失，再让编排器的确认与结果回复真正显示在面板会话里。
