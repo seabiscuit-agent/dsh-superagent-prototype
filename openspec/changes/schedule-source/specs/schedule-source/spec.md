@@ -1,0 +1,174 @@
+## Purpose
+
+内置的定时事件源：用户用 5 段 cron 与 IANA 时区声明若干任务，到点由宿主在 `schedule:<key>`
+线程上产生一条无发送者的 Trigger，交给既有的 intake、准入表与评估链，与 GitHub、飞书事件
+走同一条路；它只产生事件，不建单、不派工、不执行命令。
+
+## ADDED Requirements
+
+### Requirement: 任务行配置与校验
+
+The system SHALL 提供内置 Source kind `schedule`，其配置是一组任务行，每行恰好包含
+`key`、`cron`、`timezone`、`title`、`text`、`enabled` 六个字段；`key` 匹配 `^[a-z0-9][a-z0-9-]*$`
+且在同一配置内唯一，`cron` 是 5 段表达式（分 时 日 月 周），`timezone` 是 IANA 时区名，
+`title` / `text` 非空，`enabled` 缺省为 `true`。整个配置解析失败时该 Source 实例按既有
+`SourceRegistry.resolve()` 语义被置为 disabled，而不是让宿主崩溃。
+
+#### Scenario: 保存一行每分钟任务
+
+- **GIVEN** `schedule` Source 已安装但没有任何任务行
+- **WHEN** 用户保存一行 `{key: "ci-sweep", cron: "*/1 * * * *", timezone: "Asia/Shanghai", title: "CI 巡检", text: "看一次 CI 队列", enabled: true}`
+- **THEN** 配置通过校验并被持久化，面板里出现这一行以及它的下次触发时刻
+
+#### Scenario: key 重复或格式非法时整份配置被拒
+
+- **GIVEN** 已有任务行 `key = "ci-sweep"`
+- **WHEN** 用户再保存一行 `key = "ci-sweep"`，或保存一行 `key = "CI Sweep"`（含大写与空格）
+- **THEN** 校验失败并给出该行的错误，原配置保持不变，`schedule` 不产生任何 Trigger
+
+#### Scenario: cron 或时区非法时该行不触发但有可见状态
+
+- **GIVEN** 一行 `cron = "61 * * * *"`（分钟越界）或 `timezone = "Mars/Olympus"`
+- **WHEN** 宿主启动并进入 watch 循环
+- **THEN** 该行不产生任何 Trigger，`schedule` 健康项为 `error` 且 detail 带出该行 `key`；
+  其它合法任务行照常触发
+
+### Requirement: 按 cron 与时区解析到期时刻
+
+The system SHALL 用 5 段 cron（分、时、日、月、周）与 IANA 时区计算每个任务行的下一个到期
+时刻，换算按该时区的 wall clock 进行（**含夏令时切换**），并把到期时刻归一化为 UTC ISO 8601
+字符串（`...Z`）后使用；语法扩展（秒字段、`@daily`、`L`、`#`）MUST 被当作非法输入拒绝，不得
+静默降级。
+
+#### Scenario: 固定时区的每天 9 点
+
+- **GIVEN** 一行 `cron = "0 9 * * *"`、`timezone = "Asia/Shanghai"`
+- **WHEN** 宿主在 `2026-11-18T00:30:00Z` 计算下次触发
+- **THEN** 得到 `2026-11-18T01:00:00Z`
+
+#### Scenario: 夏令时切换日仍按当地时间触发
+
+- **GIVEN** 一行 `cron = "0 9 * * *"`、`timezone = "America/New_York"`
+- **WHEN** 宿主跨越当地 DST 切换日计算下次触发
+- **THEN** 到期时刻对应的纽约当地钟面时间仍是 09:00，UTC 偏移从 `-04:00` 变为 `-05:00`
+  （或反向），而不是固定偏移
+
+#### Scenario: 认识不到的语法被拒绝
+
+- **GIVEN** 一行 `cron = "0 0 9 * * *"`（6 段，含秒）或 `cron = "@daily"`
+- **WHEN** 配置被校验
+- **THEN** 校验失败并指出该行 `cron` 非法，该行不进入 watch 循环
+
+### Requirement: 到点产生一条 Trigger
+
+When a task row's due time arrives, the host SHALL 产生一条 Trigger 并交给
+`ctx.receive()`：`source = "schedule"`、`human = false`、
+`actor = {source: "schedule", id: ""}`（**无发送者**）、`threads = [{source: "schedule", id: <key>}]`、
+`text` 取该行 `text`、`meta = {job: <key>, due: <到期时刻>, cron, timezone}`、`at` 为该到期时刻；
+触发 id MUST 由 `(key, due)` 决定（同一输入恒得同一 id）。产生 Trigger 之外，本来源 MUST NOT
+直接建单、派工、调用模型或执行任何命令。
+
+#### Scenario: 到点只产生事件
+
+- **GIVEN** 一行每秒分钟都匹配的任务，且没有禁用
+- **WHEN** 某个到期时刻到达
+- **THEN** `ctx.receive()` 收到一条上述形状的 Trigger，`schedule:<key>` 线程被创建并记录该
+  触发；是否建单由既有评估与准入决定，本来源不再做别的事
+
+#### Scenario: 只有时间产生的请求不会自动建单
+
+- **GIVEN** 该任务行的 admission 格为默认 `ignore`，且 eval mode 为 `auto`
+- **WHEN** 到点产生 Trigger
+- **THEN** intake 记下一条 filtered 记录（reason 为 `admission_ignored`），不建工单、不唤醒任何
+  worker 会话
+
+### Requirement: 同一到期时刻只触发一次
+
+The system SHALL 保证同一个 `(key, due)` 最多入域一次：重复产生的 Trigger 必须被既有触发去重
+（相同 id 返回 `duplicate`）吞掉，不得产生第二条 Input、第二张工单或第二条时间线事实。
+
+#### Scenario: 重启后同一到期时刻不重复
+
+- **GIVEN** 到期时刻 `D` 的 Trigger 已入域，游标已推进到 `D`
+- **WHEN** 宿主重启，watch 循环重新计算并再次给出 `D`
+- **THEN** Trigger id 与已存记录相同，`ctx.receive()` 返回 `duplicate`，没有第二条 Input 或工单
+
+#### Scenario: 两个任务行在同一分钟到期
+
+- **GIVEN** 两行不同 `key` 的任务都匹配同一分钟
+- **WHEN** 该分钟到达
+- **THEN** 产生两条 Trigger，id 不同，分别落在 `schedule:<key1>` 与 `schedule:<key2>` 线程上，
+  互不覆盖
+
+### Requirement: 游标持久化与错过策略
+
+The system MUST 为每个任务行把「已处理的最后一个到期时刻」持久化为游标；宿主重启、来源被
+关闭后重新启用、`policy.paused` 由真变假时，SHALL 从游标继续，并**只为每个任务行补最近一次**
+错过的到期时刻，绝不 replay 每一个错过的档位。首次见到一个新任务行时，游标取「当前时刻之前
+最近的一次到期时刻」，因此新建一行不会立刻补发历史。
+
+#### Scenario: 停机三天后恢复只补一次
+
+- **GIVEN** 一行每分钟任务，游标停在三天前，宿主停机三天
+- **WHEN** 宿主重启并进入 watch 循环
+- **THEN** 该行只产生一条 Trigger，`meta.due` 为最后一档错过的到期时刻（不是三天前那一次），
+  游标推进到该时刻；下一次触发是恢复后的下一档
+
+#### Scenario: 新建任务行不补发历史
+
+- **GIVEN** 用户在 `2026-11-18T02:33:10Z` 新建一行 `*/1 * * * *`
+- **WHEN** 该行第一次进入 watch 循环
+- **THEN** 不产生任何 Trigger，游标初始化为 `2026-11-18T02:33:00Z`，下一次触发在
+  `2026-11-18T02:34:00Z`
+
+#### Scenario: 暂停期间不触发
+
+- **GIVEN** `policy.paused` 为真，期间有多个到期时刻
+- **WHEN** Passes 与 watch 循环继续运行
+- **THEN** 不产生 Trigger；恢复后只补最近一次，不补全部
+
+### Requirement: 触发走既有授权链
+
+The system SHALL 让 `schedule` 产生的 Trigger 与其它来源走同一条链：`SourceRegistry.scope()`
+判定是否听取、`src/policy.ts` 的 `machineGate()` 判定准入、评估与建单沿用既有流程。无发送者
+的 Trigger MUST 落在 `unlistedUnaddressed` 格，强度恒为 `inferred`；该格默认 `ignore`，用户必须
+在策略面板显式改成 `inferred` 才可能入域。
+
+#### Scenario: 未配置准入时不入域
+
+- **GIVEN** `schedule` 的 admission 表保持默认（`unlistedUnaddressed = "ignore"`）
+- **WHEN** 到期 Trigger 进入 `machineGate()`
+- **THEN** 返回 `{admissible: false, reason: "admission_ignored"}`，不消耗模型调用
+
+#### Scenario: 打开准入后由评估决定是否建单
+
+- **GIVEN** 用户把 `unlistedUnaddressed` 设为 `inferred`，eval mode 为 `auto`，且有一条启用规则与
+  该任务文本相关
+- **WHEN** 到期 Trigger 进入评估
+- **THEN** Mandate 的 strength 为 `inferred`、basis 的 cell 为 `unlistedUnaddressed`；评估接受时
+  建工单，拒绝时只留一条决策记录
+
+#### Scenario: 来源或实例被关闭
+
+- **GIVEN** `schedule` 实例被 disabled，或有任务行 `enabled = false`
+- **WHEN** 到期时刻到达
+- **THEN** 不产生 Trigger；前者由 `scope()` 返回 `{listened: false, reason: "source_disabled"}`，
+  后者该行根本不进入 watch 循环
+
+### Requirement: 触发与下次时刻可观察
+
+The system SHALL 让用户能看出定时源在做什么：面板里每个任务行显示它的下次触发时刻（或该行
+非法的原因），`schedule` 健康项在正常时报告「下一次触发时刻 / 已启用行数」，在异常时报告具体行
+与错误；`schedule:<key>` 线程在面板里可读，且历史触发以来源线程的消息形式可见。
+
+#### Scenario: 面板显示下次触发
+
+- **GIVEN** 一行每分钟任务已启用
+- **WHEN** 用户打开 `schedule` 的 Source 卡片
+- **THEN** 该行显示下次触发时刻（UTC 或本地时间的明确标注），且随时间前进；浏览器刷新后仍在
+
+#### Scenario: 非法行在健康项里点名
+
+- **GIVEN** 三行任务，其中一行的 `cron` 非法
+- **WHEN** 用户查看 Source 卡片
+- **THEN** 健康项状态为 `error`，detail 含该行 `key` 与错误原因；另外两行仍显示各自的下次触发时刻
