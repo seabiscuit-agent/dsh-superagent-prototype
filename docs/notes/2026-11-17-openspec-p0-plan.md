@@ -33,7 +33,18 @@
 - 与 spec 偏差：spec 说 attention 发送成功即写回答复，但 attention 正文是问题，实现改在
   `purpose=answer` 成功后写回，PR 中说明。
 
-### P0-3 host-owned-mechanics（下一步）
+### P0-3 host-owned-mechanics（已完成）
+
+- `src/app/receipts.ts`：result 正文由最新 report 合成（状态标签、summary、PR 链接），attention
+  由 Question 合成；answer 保留模型文本但拒绝空/静默/内部载荷/超长；确定性 id
+  `result:<ticket>:<report.at>`、`attention-reply:<qid>`、`reply:<trigger>:<sha1>`。
+- `orchestrator_reply` 只收结构化字段，返回 `{receipt_id,status,reason?}`；拒绝时不入 outbox；
+  sent 后 `concludeTurn()`。`TurnGuard` 回合结束对有 ready report 或 person 问题但无 receipt 的
+  回合发一次兜底 receipt，绝不自造 orchestrator 答案。
+- 本地 Source 首行前缀：`!dispatch` 机械 accept（不跑 assessor）、`!discussion` 永不建单、
+  `!!` 转义；确认语取本地 Source `language`（zh/en），缺失/失败回退主会话；发
+  `dispatch.fast_path` 事件。
+- `tests/model-surface.baseline.json` 按 surface 记录长度；超过即失败，只能删文本或手动更新。
 
 ## 坑
 
@@ -48,7 +59,7 @@
 ## 验证
 
 ```bash
-env -u GIT_CONFIG_GLOBAL pnpm vitest run   # 67 files / 1284 tests passed
+env -u GIT_CONFIG_GLOBAL pnpm vitest run   # 69 files / 1295 tests passed
 pnpm check
 openspec validate --all --strict           # 6 passed, 0 failed
 ```

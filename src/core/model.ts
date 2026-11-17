@@ -30,6 +30,8 @@ export interface Trigger {
   human: boolean
   /** Source-declared: the sender addressed the agent, by mentioning it or in a direct message to it. */
   addressed?: 'mention' | 'direct'
+  /** A local command prefix the host dispatched: `dispatch` accepts it mechanically, `discussion` never starts a ticket. */
+  intent?: 'dispatch' | 'discussion'
   at: string
   text: string
   channel?: ChannelRef

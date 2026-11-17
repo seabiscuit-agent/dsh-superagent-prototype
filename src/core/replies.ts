@@ -15,7 +15,9 @@ export type ReplyRequest =
   | { purpose: 'acknowledgement'; ticketId: string; triggerId: string; text: string }
   | { purpose: 'answer' | 'result' | 'attention'; ticketId?: string; triggerId?: string; question?: string
     /** The open person question this attention answers or points at; without it the text must match the question exactly. */
-    questionId?: string; text: string }
+    questionId?: string; text: string
+    /** The receipt id a host-composed message must keep; without it the id is derived from the request's payload. */
+    id?: string }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
 
@@ -46,7 +48,11 @@ export class Replies extends EnginePart {
     if (trigger.channel && trigger.human) this.options.outbox.send({ id: key('ack', trigger.id), channel: trigger.channel, text, kind: 'acknowledgement', ticketId })
   }
   /** Withdraw a ticket's question for a person from the outbox, unless it went out already. */
-  withdrawAttention(attentionId: string): void { this.options.outbox.withdraw(key('attention-reply', attentionId)) }
+  withdrawAttention(attentionId: string): void {
+    // Receipts use the spec's stable id; the hashed id keeps a question queued by an earlier version withdrawable.
+    this.options.outbox.withdraw(`attention-reply:${attentionId}`)
+    this.options.outbox.withdraw(key('attention-reply', attentionId))
+  }
   private acknowledge(request: Extract<ReplyRequest, { purpose: 'acknowledgement' }>): Reply {
     const ticket = this.require(request.ticketId)
     if (!liveTicket(ticket)) throw new UserError('ackEnded')
@@ -91,7 +97,7 @@ export class Replies extends EnginePart {
       : undefined
     if (request.purpose === 'answer' && request.questionId && !answering) throw new UserError('notOpen')
     if (request.purpose === 'answer' && !trigger?.human) throw new UserError('notQuestion')
-    const id = attention ? key('attention-reply', attention.id) : key('reply', trigger?.id ?? ticket?.id ?? '', request.text)
+    const id = request.id ?? (attention ? `attention-reply:${attention.id}` : key('reply', trigger?.id ?? ticket?.id ?? '', request.text))
     const existing = this.options.outbox.status(id)
     // A person answering the worker's question is not answering a question of their own, so it needs no take-up.
     const ready = !ticket || !trigger || !!answering || ticket.answers?.includes(trigger.id)

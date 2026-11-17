@@ -156,6 +156,15 @@ Setup must succeed before polling or work starts. Overview lists missing require
    List personal CLIs, such as one signed in to your own account, as blocked commands.
 4. **Prompts.** Set the team sections: the GitHub disclosure line, review bots, the commit author and the auto-merge condition.
 
+### Local Source prefixes
+
+Messages the owner writes in the main session are ordinary requests. Two prefixes on the first line skip the assessment turn:
+
+- `!dispatch <request>` starts one ticket immediately, titled by the trimmed first line, with a host-written confirmation. The local Source's `language` setting (`zh` or `en`) chooses that confirmation; unset, invalid or refused acceptance falls back to normal routing.
+- `!discussion <text>` stays conversation: it never creates or attaches a ticket, and the main session answers it in place.
+
+Both prefixes are lowercase, on the first line, with exactly one space. Start with `!!` to talk about the syntax literally: the message is ordinary text with one leading `!` removed. Fast-path acceptance still obeys paused state, admission and real-cost gates. Acknowledgements, results and questions are composed by the host; `orchestrator_reply` answers with a receipt id and `sent`, `queued` or `rejected`, and a turn that ends owing a ready report or a person's question gets that receipt without the model restating it.
+
 ### Management API
 
 The panel uses a local HTTP API that agents can also call. `SETUP.md` uses it to save settings, and the service script reads `GET state`.

@@ -2,12 +2,14 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { z } from 'zod'
-import { UserError, followupOwners, key, reasonText, type Decision, type DecisionKind, type EngineForMainSession, type EngineForPeople }
-  from '../../core/index.ts'
+import { UserError, followupOwners, key, latestAssignment, reasonText, type Decision, type DecisionKind, type EngineForMainSession,
+  type EngineForPeople, type Ticket } from '../../core/index.ts'
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { agendaKey, type Effects } from '../effects.ts'
+import { openPerson, receiptId, renderResult, validateAnswer, type Rejection } from '../receipts.ts'
+import { pullOf } from '../../sources/github-pull.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { attentionText } from '../render.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
@@ -32,6 +34,8 @@ export interface MainToolsHost {
   readonly resources: ResourceHost
   /** The delayed instance restart this main Session alone may ask for; the Runtime owns the queue. */
   readonly restart: RestartControl
+  /** The GitHub PR link of a ticket's latest pull request, when the deployment knows its repository. */
+  pullLink(ticket: Ticket): string | undefined
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -110,6 +114,9 @@ type Routed = { decision?: DecisionKind; reason: string; ticketId?: string | und
  * call's earlier items decided, with their batches.
  */
 function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string, string>): Routed | { refused: string } {
+  // A `!discussion` message is never a ticket: only stopping or ignoring work on it is allowed.
+  const trigger = host.store.triggers.get(item.trigger_id)
+  if (trigger?.intent === 'discussion' && (item.kind === 'accept' || item.kind === 'attach')) throw new UserError('discussionOnly')
   const note = item.note ? { note: item.note } : {}
   // A Trigger an earlier item decided went with that item's Decision, also as a member of its batch.
   // A stop of it for another ticket is the Engine's to judge.
@@ -155,6 +162,11 @@ function routeTool(host: MainToolsHost): Tool {
       const decided = new Map<string, string>()
       const results = decisions.map(item => {
         const head = { trigger_id: item.trigger_id, kind: item.kind }
+        // Discussion is never a ticket, and that verdict comes before a missing acknowledgement or title.
+        const trigger = host.store.triggers.get(item.trigger_id)
+        if (trigger?.intent === 'discussion' && (item.kind === 'accept' || item.kind === 'attach')) {
+          return { ...head, refused: new UserError('discussionOnly').message }
+        }
         const problem = invalid(item)
         if (problem) return { ...head, refused: problem }
         try {
@@ -276,25 +288,54 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_reply',
-      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
+      description: `Send one host-composed receipt for a ticket: a ready result (purpose=result, ticket_id), attention for an open person question (purpose=attention, question_id), or an answer to a person's question (purpose=answer, trigger_id). The host writes the result and attention bodies from the ticket's report and stored question; only an answer keeps your text. Refused bodies send nothing and return status=rejected with a reason. IM limit: ${IM_WORDS} words.`,
       schema: z.object({
         trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
-        ticket_id: z.string().optional(),
+        ticket_id: z.string().optional().describe('The ticket whose latest report a result carries, or whose question attention asks.'),
         purpose: z.enum(['answer', 'result', 'attention']),
-        human_action: z.string().trim().min(1).optional().describe('For attention: the person question the message asks, matching its text.'),
-        question_id: z.string().optional().describe('The worker question this message points at (attention) or answers (answer).'),
-        text: z.string().min(1).max(20000),
+        question_id: z.string().optional().describe('The open person question attention asks.'),
+        note: z.string().optional().describe('For a result: at most two short sentences of context, composed into the host body.'),
+        text: z.string().optional().describe('For an answer: the answer to the person, at most 100 words.'),
       }).strict(),
       execute: async (args, _signal, turn) => {
-        const reply = host.engine.reply({ purpose: args.purpose, text: args.text, ...(args.trigger_id ? { triggerId: args.trigger_id } : {}),
-          ...(args.ticket_id ? { ticketId: args.ticket_id } : {}), ...(args.human_action ? { question: args.human_action } : {}),
-          ...(args.question_id ? { questionId: args.question_id } : {}) })
-        await host.sendReplies()
-        const status = host.store.replyStatus(reply.id) ?? reply.status
-        // The receipt is the owner-facing message: end the turn here so the model cannot append a duplicate or paraphrase of it.
-        // A receipt still pending is not one the owner can see yet, so the turn continues and the model says where things stand.
-        if (status === 'sent') turn.concludeTurn()
-        return { status }
+        const rejected = (reason: Rejection, receipt: string) => ({ receipt_id: receipt, status: 'rejected' as const, reason })
+        const send = async (receipt: string, queued: () => void) => {
+          const before = host.store.replyStatus(receipt)
+          if (before) return { receipt_id: receipt, status: before, duplicate: true }
+          queued()
+          await host.sendReplies()
+          const status = host.store.replyStatus(receipt) ?? 'pending'
+          // The receipt is the owner-facing message: end the turn here so the model cannot append a duplicate or paraphrase of it.
+          if (status === 'sent') turn.concludeTurn()
+          return { receipt_id: receipt, status }
+        }
+        if (args.purpose === 'answer') {
+          const trigger = args.trigger_id ? host.store.triggers.get(args.trigger_id) : undefined
+          const problem = validateAnswer(args.text ?? '', trigger)
+          const receipt = receiptId('answer', { triggerId: args.trigger_id, text: args.text ?? '' })
+          if (problem) return rejected(problem, receipt)
+          return send(receipt, () => host.engine.reply({ purpose: 'answer', triggerId: args.trigger_id!, text: args.text!.trim(), id: receipt }))
+        }
+        if (args.purpose === 'attention') {
+          const questionId = args.question_id
+          const ticket = args.ticket_id ? host.store.tickets.get(args.ticket_id)
+            : host.store.tickets.list().find(item => item.questions?.some(question => question.id === questionId))
+          const question = ticket?.questions?.find(item => item.id === questionId && openPerson(item))
+          const receipt = receiptId('attention', { questionId })
+          if (!ticket || !question) return rejected('missingQuestion', receipt)
+          return send(receipt, () => host.engine.reply({ purpose: 'attention', ticketId: ticket.id, questionId: question.id,
+            text: attentionText(question), id: receipt }))
+        }
+        const ticket = args.ticket_id ? host.store.tickets.get(args.ticket_id) : undefined
+        if (!ticket) return rejected('notReady', receiptId('result', { ticketId: args.ticket_id, reportAt: '' }))
+        const report = latestAssignment(ticket)?.report
+        const outcome = ticket.ended?.outcome
+        const deliverable = report?.state === 'ready' || outcome === 'merged' || outcome === 'completed' || outcome === 'dropped'
+        if (!report || !deliverable) return rejected('notReady', receiptId('result', { ticketId: ticket.id, reportAt: report?.at ?? '' }))
+        const receipt = receiptId('result', { ticketId: ticket.id, reportAt: report.at })
+        const body = renderResult(ticket, report, args.note ?? args.text, host.pullLink(ticket))
+        if (wordCount(body) > IM_WORDS) return rejected('tooLong', receipt)
+        return send(receipt, () => host.engine.reply({ purpose: 'result', ticketId: ticket.id, text: body, id: receipt }))
       },
     }),
     tool({

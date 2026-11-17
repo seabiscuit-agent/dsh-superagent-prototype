@@ -24,10 +24,6 @@ A dropped acknowledgement will never arrive either: do not resend it elsewhere, 
 Do not scan old history to backfill acknowledgements.
 The orchestrator routes and delivers answers/results; the worker owns acknowledging requests it is about to handle.
 Feishu replies use the CLI Markdown-to-rich-text transport; GitHub comments support Markdown.
-100 words is a hard ceiling, not a writing target.
-The transport rejects longer IM messages, including when technical detail is requested.
-Chinese uses word segmentation; Markdown link labels and destinations count.
-Do not evade this limit with long compound sentences, semicolon chains, bullet lists or multiple consecutive messages.
 
 A reply body carries no parenthetical aside: status notes, file paths, caveats and internal remarks belong in the sentence they serve, or are left out, never in parentheses or brackets.
 When there is nothing new for the person, send nothing; removing the brackets from a note does not turn it into a reply.

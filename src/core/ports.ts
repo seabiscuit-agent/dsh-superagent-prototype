@@ -102,6 +102,8 @@ export interface DomainEvents {
   'trigger.followup': { triggerId: string }
   /** A scheduled wake came due for a ticket that had ended or no longer exists, so it was dropped without resuming it. */
   'agenda.dropped': { ticketId: string; key: string; reason: string; at: string }
+  /** A local command prefix was dispatched: mechanically accepted, fell back to assessment, or kept as discussion. */
+  'dispatch.fast_path': { triggerId: string; ticketId?: string; result: 'accepted' | 'fallback' | 'discussion' }
   'question.answered': { ticketId: string; questionId: string; by: 'orchestrator' | 'person' }
   'question.escalated': { ticketId: string; questionId: string; reason: string }
   'question.resolved': { ticketId: string; questionId: string }

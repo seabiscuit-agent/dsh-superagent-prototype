@@ -3,7 +3,7 @@
  * orchestrator and worker roles against tool schemas, environment variables, glossary rules (`docs/001`), and size budgets.
  */
 import { Context } from '@deepseek-ai/cordis'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
@@ -38,6 +38,8 @@ interface Skill { name: string; description: string; content: string }
  * Lower this limit when shrinking model-facing text; raise it only intentionally and explain why in the commit message.
  */
 const BUDGET: Record<Role, number> = { orchestrator: 66_000, worker: 43_000 }
+/** Recorded character count of each model-facing surface; text may shrink but not grow without a deliberate baseline update. */
+const BASELINE: Record<string, number> = JSON.parse(readFileSync(new URL('./model-surface.baseline.json', import.meta.url), 'utf8'))
 const PROMPTS = 'prompts/, skills/', TOOLS = 'src/app/tools/', SESSIONS = 'src/app/sessions.ts'
 const NOTICES = 'src/app/notices.ts', LINKS = 'src/app/links.ts', ASSESSMENT = 'src/app/assessment.ts'
 const EXECUTOR = 'src/executor/dsh.ts', ERRORS = 'src/core/errors.ts'
@@ -394,6 +396,12 @@ it.each(['orchestrator', 'worker'] as const)('keeps the %s within its character 
   const definitions = [...toolsOf(role).values()].map(({ name, description, parameters }) => ({ name, description, parameters }))
   const tools = JSON.stringify(definitions).length
   expect(prompt + tools, `${prompt} characters of prompt and ${tools} of tools`).toBeLessThanOrEqual(BUDGET[role])
+})
+
+it('keeps every model-facing surface at or below its recorded length', () => {
+  const current = Object.fromEntries(surfaces.map(surface => [surface.where, surface.text.length]))
+  const grown = Object.entries(BASELINE).filter(([where, chars]) => (current[where] ?? 0) > chars)
+  expect(grown, 'model-facing text grew past its baseline; delete equal text or explain the growth and update the baseline').toEqual([])
 })
 
 it('keeps the routing rules in dispatch, which says the main Session may accept the rest of a stop message as new work', () => {

@@ -1,6 +1,7 @@
 /** User-facing error codes mapped to their category ('missing' or 'refused') and English message template. */
 export const USER_ERRORS = {
   unknownTicket: ['missing', 'Unknown ticket'],
+  discussionOnly: ['refused', 'A !discussion message is ordinary conversation, never a ticket; answer it in the thread and do not accept or attach it.'],
   unknownProblem: ['missing', 'Unavailable Eval not found'],
   unknownTrigger: ['missing', 'Unknown trigger'],
   unknownAssignment: ['missing', 'Unknown assignment'],

@@ -249,6 +249,7 @@ Each model request binds the Session to the current prompt revision. The revisio
 | `src/app/runtime.ts` | The composition root: builds the parts with the interfaces they use, registers the routes and the Source host, and starts and stops dsh-superagent |
 | `src/app/notices.ts` | Domain events and worker reports into notices and relays for the main Session |
 | `src/app/agenda.ts` | The `agenda` effect handler: hands a due scheduled wake to its ticket, or keeps it queued while the ticket waits for a person |
+| `src/app/receipts.ts` | Turns a report or a Question into the exact message a person receives, and validates a free-text reply before it leaves |
 | `src/app/render.ts` | A Question into the message a person reads, with its options, recommendation, context and escalation reason |
 | `src/app/tools/main.ts`, `src/app/tools/executor.ts` | Tool arguments of the main Session and the Executor Sessions into calls of the core classes, and their results into cards |
 | `src/app/http.ts`, `src/app/views/`, `src/app/api.ts` | HTTP requests into calls, and Store reads into the panel's views; `api.ts` types every route for the panel |
@@ -333,6 +334,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/migration.ts` | The schema 11 migration: one step from schema 10 that writes every stored record in its current shape |
 | `src/app/effects.ts` | Effects |
 | `src/app/agenda.ts` | The `agenda` effect handler: delivers a due scheduled wake as an automatic Input, or keeps it queued while the ticket waits for a person |
+| `src/app/receipts.ts` | Turns a report or a Question into the exact message a person receives, and validates a free-text reply before it leaves |
 | `src/app/render.ts` | `attentionText`: the message that carries a Question to a person |
 | `src/app/versions.ts` | `Versions`: a record kept as numbered snapshots with a pointer to the current one, for the settings and the prompts |
 | `src/app/cache.ts` | `TextCache`: texts kept in memory within a size, the least recently used dropped first |
@@ -423,6 +425,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/local.spec.ts` | The local Source: the kind and its plugin entry, the owner preset, main-session messages as explicit candidates, echo filtering, the Apply flow with its no-op Channel, and the dispatch guidance |
+| `tests/dispatch-fast-path.spec.ts` | `!dispatch` / `!discussion` / `!!` parsing, the mechanical accept and its fallback without a configured language |
+| `tests/receipts.spec.ts` | Host-composed result and attention bodies, answer validation, internal-payload filtering and deterministic receipt ids |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
 | `tests/feishu-read.spec.ts`, `tests/github-read.spec.ts` | Feishu and GitHub reads |
 | `tests/admission-context.spec.ts`, `tests/feishu-image.spec.ts` | The Thread window of assessments, and Feishu image reads |

@@ -38,6 +38,8 @@ export interface SessionsHost {
   environment(ticket: Ticket): Variable[]
   /** Tools to register on the main Session (`ticket === undefined`) or on `ticket`'s worker Session. */
   tools(agent: Agent, ticket?: Ticket): Tool[]
+  /** Sends the host-composed receipt a turn that ends owing a ready result or an open person question must carry. */
+  fallback?(ticketId: string, questionId?: string): void
 }
 
 /**
@@ -154,7 +156,8 @@ export class Sessions {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
     // A turn that owes the owner a word after a worker report must not close silently.
-    new TurnGuard({ context: ctx, masterId: this.host.masterId }).install()
+    new TurnGuard({ context: ctx, masterId: this.host.masterId,
+      ...this.host.fallback ? { fallback: (ticketId, questionId) => this.host.fallback!(ticketId, questionId) } : {} }).install()
   }
   /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {

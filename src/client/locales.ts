@@ -684,6 +684,7 @@ const TEXT = {
   'meaning.environment': ['每个工单的执行器 Session 和准备命令运行的环境：执行器和各来源登记的变量，每个有键、值和说明', 'Where a Ticket\'s Executor Session and prepare command run: the variables the Executor and the Sources register, each with a key, a value and a description'],
   // User and agent error codes; English reuses the host's own text read by agents
   'userError.unknownTicket': ['找不到这个工单。', USER_ERRORS.unknownTicket[1]],
+  'userError.discussionOnly': ['这条 !discussion 消息只是普通对话，不是工单：在会话里直接回答，不要接受或挂到工单上。', USER_ERRORS.discussionOnly[1]],
   'userError.unknownProblem': ['找不到这个未完成的评估。', USER_ERRORS.unknownProblem[1]],
   'userError.unknownTrigger': ['找不到这个触发。', USER_ERRORS.unknownTrigger[1]],
   'userError.unknownAssignment': ['找不到这个派工。', USER_ERRORS.unknownAssignment[1]],

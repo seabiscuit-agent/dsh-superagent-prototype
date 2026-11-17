@@ -45,7 +45,13 @@ export class Engine {
    * and queue it for Eval on its primary Thread unless a ticket's worker decides it (see `followupOwners`).
    * Triggers that arrive while an Eval of that Thread runs wait together for the next one.
    */
-  receive(trigger: Trigger): ReceiveResult { return this.repo.atomic(() => this.intake.receive(trigger)) }
+  receive(trigger: Trigger, options: { assess?: boolean } = {}): ReceiveResult {
+    return this.repo.atomic(() => this.intake.receive(trigger, options))
+  }
+  /** Records how a local command prefix was dispatched, for observability; it neither changes a ticket nor carries its text. */
+  signalFastPath(triggerId: string, result: 'accepted' | 'fallback' | 'discussion', ticketId?: string): void {
+    this.options.emit?.({ type: 'dispatch.fast_path', at: this.now(), data: { triggerId, result, ...ticketId ? { ticketId } : {} } })
+  }
   /**
    * A Source's request to make an open ticket follow one of its Threads, such as a pull request's, `own` when the ticket
    * opened it: the ticket subscribes to it, and a ready report ends it only once `followsDone` holds (see `Tickets.followsDone`).

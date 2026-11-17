@@ -793,7 +793,7 @@ describe('worker reports', () => {
     // Clearing withdraws this assignment's open questions, and the person ones' unsent messages.
     const cleared = h.engine.report(ticketId, { state: 'progress', summary: 'answered', question: null })
     expect(cleared.questions!.every(question => question.resolution === 'withdrawn')).toBe(true)
-    expect(h.withdrawn).toEqual(added.questions!.map(question => key('attention-reply', question.id)))
+    expect(h.withdrawn).toEqual(added.questions!.flatMap(question => [`attention-reply:${question.id}`, key('attention-reply', question.id)]))
   })
   it('ends the ticket on a final report: dropped drops it, ready completes it unless it follows a Source\'s Thread that is open', () => {
     const outcome = (state: 'ready' | 'dropped' | 'failed', follows: boolean, closed = false) => {
@@ -1118,7 +1118,7 @@ describe('replies', () => {
     expect(() => h.engine.reply({ purpose: 'attention', ticketId: quiet, text: 'Anything to send.' })).toThrow(new UserError('notAttention'))
     expect(() => h.engine.reply({ purpose: 'attention', ticketId: quiet, question: '', text: 'Anything to send.' })).toThrow(new UserError('notAttention'))
     const question = h.repo.tickets.get(ticketId)!.questions!.find(item => item.question === 'Which color?')!
-    expect(h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' }).id).toBe(key('attention-reply', question.id))
+    expect(h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' }).id).toBe(`attention-reply:${question.id}`)
     // A question goes where the message that raised it was written.
     expect(h.outbox.at(-1)!.channel).toEqual(asked.channel)
     h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
