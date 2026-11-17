@@ -74,11 +74,11 @@ const now = (): string => new Date().toISOString()
 export function localCommand(text: string): { intent: 'dispatch' | 'discussion'; body: string } | { intent: 'escape' } | undefined {
   const first = text.split('\n', 1)[0] ?? ''
   // `!!` escapes the syntax: the message is ordinary text, with one `!` removed so the person can talk about `!dispatch`.
-  if (/^!!(?:dispatch|discussion)\s+\S/u.test(first)) return { intent: 'escape' }
-  const match = /^!(dispatch|discussion)\s+(\S.*)$/u.exec(first)
+  if (/^!!(?:dispatch|discussion)(?:\s+\S|$)/u.test(first)) return { intent: 'escape' }
+  const match = /^!(dispatch|discussion)(?: (\S.*))?$/u.exec(first)
   if (!match) return undefined
   const consumed = first.length
-  const body = `${match[2]}\n${text.slice(consumed + 1)}`.trim()
+  const body = `${match[2] ?? ''}\n${text.slice(consumed + 1)}`.trim()
   return { intent: match[1] as 'dispatch' | 'discussion', body }
 }
 /** A deterministic kebab-case worktree name from a title plus the trigger hash, valid for the executor's name schema. */
@@ -319,7 +319,8 @@ export class Runtime extends Service implements SourceHost {
     this.noteLocal()
     try {
       if (command?.intent === 'discussion') {
-        // Discussion is never a ticket: store the message, queue no assessment, and let the conversation answer it.
+        // Discussion is never a ticket: store the message without its prefix, queue no assessment, and let the conversation answer it.
+        trigger.text = command.body
         this.receive(trigger, { assess: false })
         this.engine.signalFastPath(trigger.id, 'discussion')
       } else if (command?.intent === 'dispatch') {
@@ -351,7 +352,7 @@ export class Runtime extends Service implements SourceHost {
     const acknowledgement = language === 'zh' ? `收到，开始处理：${quoted}` : `On it: starting "${quoted}".`
     if (wordCount(acknowledgement) > IM_WORDS) return fallback()
     const stored = this.receive(trigger, { assess: false })
-    if (stored === 'filtered') return
+    if (stored !== 'stored') { this.engine.signalFastPath(trigger.id, 'fallback'); return }
     try {
       const decision = this.engine.decide(trigger.id, { kind: 'accept', title, scope: request.slice(0, 1500),
         reason: { code: 'explicitRouted' }, acknowledgement, name })

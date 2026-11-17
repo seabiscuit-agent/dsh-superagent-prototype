@@ -38,7 +38,7 @@ it('reads only an exact lowercase prefix on the first line, and lets `!!` escape
   expect(localCommand('!!dispatch 只是提到这个写法')).toEqual({ intent: 'escape' })
   expect(localCommand('!Dispatch 大写不算')).toBeUndefined()
   expect(localCommand('前言\n!dispatch 不在首行')).toBeUndefined()
-  expect(localCommand('!dispatch')).toBeUndefined()
+  expect(localCommand('!dispatch')).toEqual({ intent: 'dispatch', body: '' })
 })
 
 it('turns `!dispatch` into one mechanically accepted ticket and one confirmation, without an assessment', async () => {
@@ -56,7 +56,7 @@ it('turns `!dispatch` into one mechanically accepted ticket and one confirmation
 it('keeps `!discussion` ordinary conversation: no ticket, and acceptance is refused', async () => {
   const host = await localHost('zh')
   await say(host, '!discussion 先讨论一下')
-  expect(triggers(host)[0]).toMatchObject({ intent: 'discussion' })
+  expect(triggers(host)[0]).toMatchObject({ intent: 'discussion', text: '先讨论一下' })
   expect(tickets(host)).toHaveLength(0)
   await expect(host.route({ kind: 'accept', trigger_id: triggers(host)[0]!.id, title: '讨论', worktree_name: 'discuss' }))
     .rejects.toThrow('ordinary conversation')
