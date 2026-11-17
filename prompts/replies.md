@@ -1,5 +1,5 @@
-The reply tool enforces a purpose: result requires ticket readiness; attention requires the ticket's current structured request (ticket_id plus its exact question in human_action), even while running; answer must reference an original human question.
-For a structured request, pass ticket_id and copy the current ticket.attention.question into human_action.
+The reply tool enforces a purpose: result requires ticket readiness; attention requires the ticket's current structured request (ticket_id plus the open person question, by question_id or its exact text in human_action), even while running; answer must reference an original human question.
+For a structured request, pass ticket_id and the question_id of the worker's open person question; the host renders attention text from that question. A person's answer sent with purpose=answer goes back to the matching question after it is sent.
 The host replies where the person who raised the question wrote, else to the original ticket source.
 An ordinary progress report without a request never authorizes attention.
 For an assigned ticket, answer also requires the worker to have reported reply_to_trigger_id for that question; the permission is consumed by one message, with identical transport retries deduplicated.
@@ -24,10 +24,6 @@ A dropped acknowledgement will never arrive either: do not resend it elsewhere, 
 Do not scan old history to backfill acknowledgements.
 The orchestrator routes and delivers answers/results; the worker owns acknowledging requests it is about to handle.
 Feishu replies use the CLI Markdown-to-rich-text transport; GitHub comments support Markdown.
-100 words is a hard ceiling, not a writing target.
-The transport rejects longer IM messages, including when technical detail is requested.
-Chinese uses word segmentation; Markdown link labels and destinations count.
-Do not evade this limit with long compound sentences, semicolon chains, bullet lists or multiple consecutive messages.
 
 A reply body carries no parenthetical aside: status notes, file paths, caveats and internal remarks belong in the sentence they serve, or are left out, never in parentheses or brackets.
 When there is nothing new for the person, send nothing; removing the brackets from a note does not turn it into a reply.

@@ -6,7 +6,7 @@ import { key, threadKey, type ChannelRef, type Decision, type OutboundMessage, t
   type ThreadFacts, type Ticket, type Trigger, type TriggerDisposition } from '../core/index.ts'
 import { KV, type Family, type Key } from '../kv.ts'
 import { SettingsSchema, type Settings, type SettingsOrigin, type SettingsSave } from '../policy.ts'
-import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateTo11, tooOld } from './migration.ts'
+import { OLDEST_SCHEMA, SCHEMA_VERSION, migrateQuestions, migrateTo11, tooOld } from './migration.ts'
 import { Versions } from './versions.ts'
 import { storeReads } from './store-read.ts'
 
@@ -231,14 +231,14 @@ export class Store implements Repositories {
     }),
   }
   readonly tickets = {
-    get: (id: string): Ticket | undefined => { const row = this.db.prepare('SELECT value FROM ticket WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Ticket : undefined },
+    get: (id: string): Ticket | undefined => { const row = this.db.prepare('SELECT value FROM ticket WHERE id=?').get(id); return row ? migrateQuestions(JSON.parse(String(row.value)) as Ticket) : undefined },
     save: (ticket: Ticket): void => { this.db.prepare('INSERT INTO ticket VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(ticket.id, JSON.stringify(ticket)) },
     /** Newest first. */
-    list: (): Ticket[] => this.values('SELECT value FROM ticket ORDER BY rowid DESC'),
+    list: (): Ticket[] => this.values<Ticket>('SELECT value FROM ticket ORDER BY rowid DESC').map(migrateQuestions),
     /** Newest first. */
-    open: (): Ticket[] => this.values('SELECT value FROM ticket WHERE open = 1 ORDER BY rowid DESC'),
+    open: (): Ticket[] => this.values<Ticket>('SELECT value FROM ticket WHERE open = 1 ORDER BY rowid DESC').map(migrateQuestions),
     /** Newest first. */
-    active: (): Ticket[] => this.values('SELECT value FROM ticket WHERE active = 1 ORDER BY rowid DESC'),
+    active: (): Ticket[] => this.values<Ticket>('SELECT value FROM ticket WHERE active = 1 ORDER BY rowid DESC').map(migrateQuestions),
   }
   readonly decisions = {
     get: (id: string): Decision | undefined => { const row = this.db.prepare('SELECT value FROM decision WHERE id=?').get(id); return row ? JSON.parse(String(row.value)) as Decision : undefined },
@@ -273,11 +273,11 @@ export class Store implements Repositories {
      */
     settle: (message: OutboundMessage, outcome: 'sent' | DropReason): void => {
       const settled = outcome === 'sent' ? { status: 'sent' } : { status: 'dropped', dropped: { at: new Date().toISOString(), reason: outcome } }
-      const { id, channel, text, kind, ticketId } = message
+      const { id, channel, text, kind, ticketId, questionId } = message
       const updated = this.db.prepare("UPDATE outbox SET value = json_patch(value, ?) WHERE id = ? AND value ->> '$.status' = 'pending'")
         .run(JSON.stringify(settled), id)
       if (!Number(updated.changes)) this.db.prepare('INSERT OR IGNORE INTO outbox (id, value) VALUES (?, ?)')
-        .run(id, JSON.stringify({ id, channel, text, kind, ...ticketId ? { ticketId } : {}, ...settled }))
+        .run(id, JSON.stringify({ id, channel, text, kind, ...ticketId ? { ticketId } : {}, ...questionId ? { questionId } : {}, ...settled }))
     },
     /**
      * Withdraws a pending message that has not yet been sent.

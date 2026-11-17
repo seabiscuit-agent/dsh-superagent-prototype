@@ -2,7 +2,7 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { latestAssignment, liveTicket, runningAssignment } from './model.ts'
-import type { ReportState, Ticket } from './model.ts'
+import type { Question, ReportState, Ticket } from './model.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
 import type { Replies } from './replies.ts'
 import { automatic, type Tickets } from './tickets.ts'
@@ -11,9 +11,19 @@ import { automatic, type Tickets } from './tickets.ts'
 export interface WorkerReport {
   state: ReportState
   summary: string
-  /** Open question for a person: a string asks it, `null` clears an open one, and `undefined` keeps the current one. */
+  /** A question: a string asks it, `null` withdraws the open questions of this assignment, and `undefined` leaves them be. */
   question?: string | null
-  /** The person's message whose request raised the question; routes the question to the channel where it was written. */
+  /** Who answers it: the main Session (`orchestrator`) or a person (`person`, the default). */
+  questionFor?: Question['to']
+  /** Two to five choices the worker offers. */
+  options?: string[]
+  /** One of `options` the worker recommends. */
+  recommend?: string
+  /** Stable name that updates an open question with the same key instead of asking a new one. */
+  questionKey?: string
+  /** Why the worker asks, in its own words. */
+  context?: string
+  /** The person's message whose request raised a person's question; routes it to the channel where it was written. */
   askedBy?: string
   /** The person's question this report answers, which the worker thereby takes up; authorizes the main Session to send an answer reply. */
   answers?: string
@@ -99,7 +109,9 @@ export class Assignments extends EnginePart {
   report(ticketId: string, report: WorkerReport): Ticket {
     const ticket = this.require(ticketId)
     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
-    if (report.question && (report.state === 'ready' || report.answers)) throw new UserError('questionWithResult')
+    if (report.question && (report.state === 'ready' || report.state === 'dropped' || report.state === 'failed' || report.answers)) {
+      throw new UserError('questionWithResult')
+    }
     if (report.askedBy && !report.question) throw new UserError('askerWithoutQuestion')
     const person = (id: string, channel: boolean) => {
       const trigger = this.repo.triggers.get(id)
@@ -110,16 +122,54 @@ export class Assignments extends EnginePart {
     const assignment = runningAssignment(ticket) ?? latestAssignment(ticket)
     if (!assignment) throw new UserError('unknownAssignment')
     if (assignment.state === 'ended') throw new UserError('assignmentEnded')
+    const to = report.questionFor ?? 'person'
+    if (report.options) {
+      const options = [...new Set(report.options.map(option => option.trim()).filter(option => option.length > 0))]
+      if (options.length < 2 || options.length > 5 || options.length !== report.options.length) throw new UserError('invalidOptions')
+      if (report.recommend && !options.includes(report.recommend)) throw new UserError('invalidRecommend')
+    } else if (report.recommend) throw new UserError('invalidRecommend')
+    if (report.questionKey && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(report.questionKey)) throw new UserError('invalidQuestionKey')
     const at = this.now()
-    const previous = ticket.attention
-    const ask = (question: string) => ({ id: key('attention', ticketId, question, at), question, ...(report.askedBy ? { triggerId: report.askedBy } : {}) })
-    const asked = report.question && report.question !== previous?.question ? ask(report.question) : previous
-    const attention = report.question === null || report.state === 'ready' ? undefined : asked
-    if (attention) ticket.attention = attention
-    else delete ticket.attention
-    // A replaced or cleared attention question withdraws any pending unsent reply for the previous question from the outbox.
-    if (previous && previous.id !== attention?.id) this.replies.withdrawAttention(previous.id)
-    assignment.report = { state: report.state, summary: report.summary, at }
+    const questions = ticket.questions ?? []
+    const open = questions.filter(question => question.resolution === undefined)
+    let asked: Question | undefined
+    if (report.question === null) {
+      // Clearing withdraws this assignment's open questions, and any unsent attention for them.
+      for (const question of open.filter(item => item.assignmentId === assignment.id)) {
+        question.resolution = 'withdrawn'; question.resolvedAt = at
+        if (question.to === 'person') this.replies.withdrawAttention(question.id)
+      }
+    } else if (report.question !== undefined) {
+      const existing = report.questionKey ? open.find(question => question.key === report.questionKey) : undefined
+      if (existing) {
+        // A named question updates in place; a pending attention for its old text must go out again under the new one.
+        if (existing.to === 'person' && (existing.question !== report.question || to === 'orchestrator')) this.replies.withdrawAttention(existing.id)
+        existing.question = report.question
+        existing.to = to
+        existing.blocking = report.state === 'blocked'
+        existing.options = report.options ? [...new Set(report.options.map(option => option.trim()))] : undefined
+        existing.recommend = report.recommend
+        existing.context = report.context
+        existing.triggerId = to === 'person' ? report.askedBy : undefined
+        asked = existing
+      } else {
+        asked = { id: key('question', ticketId, report.question, at), from: 'worker', to, question: report.question,
+          ...(report.questionKey ? { key: report.questionKey } : {}), ...(report.options ? { options: [...new Set(report.options.map(option => option.trim()))] } : {}),
+          ...(report.recommend ? { recommend: report.recommend } : {}), ...(report.context ? { context: report.context } : {}),
+          blocking: report.state === 'blocked', ...(to === 'person' && report.askedBy ? { triggerId: report.askedBy } : {}),
+          assignmentId: assignment.id, createdAt: at }
+        questions.push(asked)
+      }
+    }
+    // A ready result closes the questions of the assignment that asked them: nothing is left for a person to answer.
+    if (report.state === 'ready' && report.question === undefined) {
+      for (const question of open.filter(item => item.assignmentId === assignment.id)) {
+        question.resolution = 'withdrawn'; question.resolvedAt = at
+        if (question.to === 'person') this.replies.withdrawAttention(question.id)
+      }
+    }
+    if (questions.length) ticket.questions = questions
+    assignment.report = { state: report.state, summary: report.summary, at, ...(asked ? { questionId: asked.id } : {}) }
     ticket.updatedAt = at
     if (report.answers && !ticket.answers?.includes(report.answers)) ticket.answers = [...ticket.answers ?? [], report.answers]
     if (report.answers) this.takeUp(ticketId, report.answers)

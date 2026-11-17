@@ -11,10 +11,11 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-subprocess'
+import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
-import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
+import { Engine, key, latestAssignment, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
 import { allowedSender, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
@@ -33,10 +34,16 @@ import { RestartQueue } from './restart-queue.ts'
 import { restartViaPanel } from './restart-panel.ts'
 import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
+import { agendaHandler } from './agenda.ts'
 import { Prompts } from './prompts.ts'
 import { registerHttp, type HttpHost } from './http.ts'
 import type { LinkTarget } from './views/records.ts'
 import { candidateCard, repliedTo, sourceLink, type LinkHost } from './links.ts'
+import { pullOf } from '../sources/github-pull.ts'
+import { WorktreeNameSchema } from './assessment.ts'
+import { IM_WORDS, wordCount } from '../infra/text.ts'
+import { openPerson, renderResult } from './receipts.ts'
+import { attentionText } from './render.ts'
 import { eventNotice, followupNotice } from './notices.ts'
 import { pullEndNotices } from '../sources/github-pull.ts'
 import { OWNER, ownerTrigger, SOURCE } from '../sources/local.ts'
@@ -62,6 +69,29 @@ const now = (): string => new Date().toISOString()
  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
  * Exposes the `SourceHost` service on the Cordis context for source plugins and coordinates startup, setup checks, HTTP route registration, and graceful shutdown.
  * Locks the state directory before opening SQLite so concurrent processes cannot corrupt or double-migrate state.
+ */
+/** A local command prefix: `!dispatch` starts a ticket mechanically, `!discussion` stays conversation. `!!` escapes. */
+export function localCommand(text: string): { intent: 'dispatch' | 'discussion'; body: string } | { intent: 'escape' } | undefined {
+  const first = text.split('\n', 1)[0] ?? ''
+  // `!!` escapes the syntax: the message is ordinary text, with one `!` removed so the person can talk about `!dispatch`.
+  if (/^!!(?:dispatch|discussion)(?:\s+\S|$)/u.test(first)) return { intent: 'escape' }
+  const match = /^!(dispatch|discussion)(?: (\S.*))?$/u.exec(first)
+  if (!match) return undefined
+  const consumed = first.length
+  const body = `${match[2] ?? ''}\n${text.slice(consumed + 1)}`.trim()
+  return { intent: match[1] as 'dispatch' | 'discussion', body }
+}
+/** A deterministic kebab-case worktree name from a title plus the trigger hash, valid for the executor's name schema. */
+function worktreeName(title: string, triggerId: string): string {
+  const words = title.toLowerCase().replace(/[^a-z0-9]+/gu, ' ').trim().split(' ').filter(Boolean).slice(0, 3)
+  const slug = (words.length ? words.join('-') : 'task').slice(0, 22)
+  const hash = createHash('sha1').update(triggerId).digest('hex').slice(0, 7)
+  return WorktreeNameSchema.parse(`${slug}-${hash}`)
+}
+
+/**
+ * Wires the orchestrator together: the store, Sources, Sessions, effects, the Engine and the Passes, and turns a
+ * person's local message into a Trigger the rest of the system can route.
  */
 export class Runtime extends Service implements SourceHost {
   readonly store: Store
@@ -129,11 +159,13 @@ export class Runtime extends Service implements SourceHost {
       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
       const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
+        agenda: id => effects.agendaRows(id),
         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
         feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
         lifetime: this.lifetime,
         closing: () => this.closing(), environment,
+        fallback: (ticketId, questionId) => this.fallback(ticketId, questionId),
         tools: (agent, ticket) => ticket ? executorTools(this.toolHost, ticket) : mainTools(this.toolHost, agent) })
       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
@@ -146,7 +178,9 @@ export class Runtime extends Service implements SourceHost {
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused(),
         // The local Source's conversation is the main session itself: render each of its receipts there as a notice row, deduplicated per receipt id.
-        renderLocal: (receipt, summary) => sessions.renderReceipt(receipt.id, receipt.text, summary) })
+        renderLocal: (receipt, summary) => sessions.renderReceipt(receipt.id, receipt.text, summary),
+        // A person's answer that went out closes the worker's question and reaches the worker as an Input.
+        answered: receipt => { if (receipt.questionId && receipt.ticketId) this.engine.personAnswered(receipt.ticketId, receipt.questionId, receipt.text) } })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,
@@ -167,10 +201,12 @@ export class Runtime extends Service implements SourceHost {
             for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
           }
         } })
+      // A scheduled wake is one-shot: the row is deleted once its Input is written; a ticket waiting for a person keeps it queued.
+      effects.handle('agenda', agendaHandler(engine), { limit: () => this.paused() ? 0 : 4 })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
       const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }
-      const passes = this.passes = new Passes({ engine: { receive: trigger => engine.receive(trigger), evaluateDue }, effects,
+      const passes = this.passes = new Passes({ engine: { receive: (trigger, options) => engine.receive(trigger, options), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
@@ -188,8 +224,9 @@ export class Runtime extends Service implements SourceHost {
         now: () => Date.now(),
         log: message => ctx.logger.warn('dsh-superagent %s', message),
       })
-      this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources, restart: restartQueue,
+      this.toolHost = { context: ctx, engine, store, effects, prompts, sessions, settings: this.settings, assessor, resources, restart: restartQueue,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
+        pullLink: ticket => this.pullLink(ticket),
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
       // The local Source's intake: a person's message in the main session's own GUI enters the domain as an explicit Trigger.
@@ -226,7 +263,7 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
-  receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
+  receive(trigger: Trigger, options: { assess?: boolean } = {}): ReceiveResult { return this.passes.receive(trigger, options) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
   sendReplies(): Promise<void> { return this.outbox.sent() }
@@ -239,19 +276,94 @@ export class Runtime extends Service implements SourceHost {
    * session's echoes, counted as filtered and never dispatched. Receiving is synchronous recording plus a scheduled pass, so this
    * never waits on an async delivery inside the host's event.
    */
+  /** The GitHub page of a ticket's latest pull request, when the deployment knows its repository. */
+  private pullLink(ticket: Ticket): string | undefined {
+    const number = pullOf(ticket)
+    const repository = this.setup.configured() ? this.setup.deployment.repository : ''
+    return number && repository ? `https://github.com/${repository}/pull/${number}` : undefined
+  }
+  /**
+   * The receipt a main-Session turn owes when the model closed without one: a ready report becomes its host-composed result, and
+   * a person question still open becomes attention. It never invents an answer to an orchestrator question.
+   */
+  private fallback(ticketId: string, questionId?: string): void {
+    try {
+      const ticket = this.store.tickets.get(ticketId)
+      if (!ticket) return
+      if (questionId) {
+        const question = ticket.questions?.find(item => item.id === questionId && openPerson(item))
+        if (!question) return
+        const id = `attention-reply:${question.id}`
+        if (this.store.receipts.get(id)) return
+        this.engine.reply({ purpose: 'attention', ticketId, questionId: question.id, text: attentionText(question), id })
+        return
+      }
+      const report = latestAssignment(ticket)?.report
+      if (report?.state !== 'ready') return
+      const id = `result:${ticket.id}:${report.at}`
+      if (this.store.receipts.get(id)) return
+      this.engine.reply({ purpose: 'result', ticketId, text: renderResult(ticket, report, undefined, this.pullLink(ticket)), id })
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent: fallback receipt failed: %s', String(error))
+    }
+  }
   private ingestLocal(session: { id: string }, message: UserMessage, at: number): void {
     if (session.id !== this.masterId || !this.sources.kind(SOURCE)) return
     if (message.source.kind !== 'user' || this.quiet) { this.localIntake.filtered++; this.noteLocal(); return }
     const trigger = ownerTrigger(message, this.masterId, at)
     if (!trigger.text) return
+    const command = localCommand(trigger.text)
+    if (command?.intent === 'escape') trigger.text = trigger.text.slice(1)
+    else if (command) trigger.intent = command.intent
     this.localIntake.ingested++
     this.noteLocal()
     try {
-      this.receive(trigger)
+      if (command?.intent === 'discussion') {
+        // Discussion is never a ticket: store the message without its prefix, queue no assessment, and let the conversation answer it.
+        trigger.text = command.body
+        this.receive(trigger, { assess: false })
+        this.engine.signalFastPath(trigger.id, 'discussion')
+      } else if (command?.intent === 'dispatch') {
+        this.dispatchFast(trigger, command.body)
+      } else this.receive(trigger)
       // The thread exists once the Trigger is stored; a display label makes the main session recognizable in ticket views.
       this.store.threads.describe(`local:${this.masterId}`, { label: 'Main session' })
     } catch (error) {
       this.ctx.logger.warn('dsh-superagent could not receive a main-session message as a local Trigger: %s', String(error))
+    }
+  }
+  /**
+   * Mechanically accepts a `!dispatch` request without an assessment turn: one ticket, the first line as title, a name derived
+   * from the title and trigger, and one host-written confirmation in the local Source's configured language. Anything that
+   * cannot be accepted cleanly falls back to ordinary assessment routing instead of a partial ticket.
+   */
+  private dispatchFast(trigger: Trigger, body: string): void {
+    const language = this.sources.instance<{ language?: 'zh' | 'en' }>(SOURCE)?.config.language
+    const title = body.split('\n', 1)[0]?.trim() ?? ''
+    const request = body.trim()
+    const fallback = () => {
+      this.receive(trigger)
+      this.engine.signalFastPath(trigger.id, 'fallback')
+    }
+    if (!language || !request || !title || title.length > 200) return fallback()
+    let name: string
+    try { name = worktreeName(title, trigger.id) } catch { return fallback() }
+    const quoted = title.slice(0, 60)
+    const acknowledgement = language === 'zh' ? `收到，开始处理：${quoted}` : `On it: starting "${quoted}".`
+    if (wordCount(acknowledgement) > IM_WORDS) return fallback()
+    const stored = this.receive(trigger, { assess: false })
+    if (stored !== 'stored') { this.engine.signalFastPath(trigger.id, 'fallback'); return }
+    try {
+      const decision = this.engine.decide(trigger.id, { kind: 'accept', title, scope: request.slice(0, 1500),
+        reason: { code: 'explicitRouted' }, acknowledgement, name })
+      if (decision.kind !== 'accept' || !decision.ticketId) throw new Error(`Not accepted: ${reasonText(decision.reason)}`)
+      this.passes.request()
+      this.engine.signalFastPath(trigger.id, 'accepted', decision.ticketId)
+    } catch (error) {
+      this.ctx.logger.warn('dsh-superagent could not dispatch %s mechanically: %s', trigger.id, String(error))
+      // Assessment is the fallback, not a half-created ticket: the stored trigger is queued for a fresh Eval.
+      try { this.engine.reevaluate(trigger.id) } catch { /* already accepted or held */ }
+      this.engine.signalFastPath(trigger.id, 'fallback')
     }
   }
   /** Reports the local Source's intake on its health entry; no entry exists while the kind is not registered. */
@@ -316,7 +428,7 @@ export class Runtime extends Service implements SourceHost {
   private httpHost(): HttpHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
-    return { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks,
+    return { store, sources, prompts, sessions, settings, engine, effects: this.effects, executor, health, machine, masterId, ready, sourceLinks,
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),

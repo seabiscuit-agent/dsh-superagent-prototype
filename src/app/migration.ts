@@ -44,7 +44,7 @@ export function migrateTo11(store: Store): void {
   const human = (triggerId: string) => store.triggers.get(triggerId)?.human === true
   const closed = (number: number) => pullEnd(store.get<unknown>(`github-ended:${number}`))
   for (const row of store.db.prepare('SELECT id, value FROM ticket').all()) {
-    step(`ticket ${String(row.id)}`, () => { store.tickets.save(ticketOf(JSON.parse(String(row.value)) as Stored, answers, human, closed)) })
+    step(`ticket ${String(row.id)}`, () => { store.tickets.save(migrateQuestions(ticketOf(JSON.parse(String(row.value)) as Stored, answers, human, closed))) })
   }
   for (const row of store.db.prepare("SELECT id, value FROM decision WHERE json_type(value, '$.mandate') = 'object'").all()) {
     step(`decision ${String(row.id)}`, () => {
@@ -84,7 +84,7 @@ export function migrateTo11(store: Store): void {
   step('the pull request ends', () => { dropPullEnds(store) })
   step('the dismissed problems', () => { moveDismissals(store) })
   for (const row of store.db.prepare('SELECT id, value FROM ticket').all()) {
-    step(`ticket ${String(row.id)}`, () => { store.tickets.save(withoutCopies(JSON.parse(String(row.value)) as Stored)) })
+    step(`ticket ${String(row.id)}`, () => { store.tickets.save(migrateQuestions(withoutCopies(JSON.parse(String(row.value)) as Stored))) })
   }
   step('the reasons', () => { reasonsAsCodes(store) })
   step('the Triggers\' times', () => { triggerTimes(store) })
@@ -363,6 +363,19 @@ export function basisOf(stored: unknown): MandateBasis {
  * (`follows`) from `meta` and GitHub opener channels, merges reported `answers`, marks human trigger inputs (`human: true`),
  * and converts pending `reopen` inputs into `text` inputs for the worker.
  */
+/**
+ * Normalizes a ticket stored before the single `attention` slot became an open `questions` array: the old question keeps its
+ * id (and with it the id of a pending `attention-reply` receipt), so an unsent question still goes out and can be answered.
+ */
+export function migrateQuestions(ticket: Ticket): Ticket {
+  const legacy = ticket as Ticket & { attention?: { id: string; question: string; triggerId?: string } }
+  if (Array.isArray(legacy.questions)) return ticket
+  const { attention, ...rest } = legacy
+  if (!attention) return { ...rest, questions: [] }
+  return { ...rest, questions: [{ id: attention.id, from: 'worker', to: 'person', blocking: true, question: attention.question,
+    ...(attention.triggerId ? { triggerId: attention.triggerId } : {}), createdAt: ticket.updatedAt }] }
+}
+
 export function ticketOf(old: Stored, answers = new Map<string, string[]>(), human: (triggerId: string) => boolean = () => false,
   closed: (number: number) => Follow['closed'] = () => undefined): Ticket {
   const { meta: storedMeta, ...rest } = old as Stored & { meta?: Stored }

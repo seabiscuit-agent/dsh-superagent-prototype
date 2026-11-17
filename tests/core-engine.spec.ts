@@ -776,21 +776,24 @@ describe('policy change', () => {
 })
 
 describe('worker reports', () => {
-  it('asks, keeps, replaces and clears the question for a person, and says which question a report replaced', () => {
+  it('asks, keeps, adds and clears questions for a person, and names the question a report asked', () => {
     const h = harness()
     const ticketId = accepted(h).ticketId!
     const asked = h.engine.report(ticketId, { state: 'progress', summary: 'need a call', question: 'Which color?', askedBy: '1' })
-    expect(asked.attention).toMatchObject({ question: 'Which color?', triggerId: '1' })
-    expect(h.engine.report(ticketId, { state: 'blocked', summary: 'still waiting' }).attention).toEqual(asked.attention)
+    expect(asked.questions).toEqual([expect.objectContaining({ question: 'Which color?', to: 'person', triggerId: '1', blocking: false })])
+    const first = asked.questions![0]!
+    expect(h.engine.report(ticketId, { state: 'blocked', summary: 'still waiting' }).questions).toEqual([first])
     expect(h.withdrawn).toEqual([])
-    const replaced = h.engine.report(ticketId, { state: 'progress', summary: 'other question', question: 'Which size?' })
-    expect(replaced.attention).toMatchObject({ question: 'Which size?' })
-    expect(replaced.attention).not.toHaveProperty('triggerId')
-    // The replaced question is withdrawn from the outbox if its message has not gone out yet.
-    expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id)])
+    // A new question without a key adds a second open question; it does not replace the first.
+    const added = h.engine.report(ticketId, { state: 'progress', summary: 'other question', question: 'Which size?' })
+    expect(added.questions).toHaveLength(2)
+    expect(added.questions![1]).toMatchObject({ question: 'Which size?', to: 'person' })
+    expect(added.questions![1]).not.toHaveProperty('triggerId')
+    expect(h.withdrawn).toEqual([])
+    // Clearing withdraws this assignment's open questions, and the person ones' unsent messages.
     const cleared = h.engine.report(ticketId, { state: 'progress', summary: 'answered', question: null })
-    expect(cleared).not.toHaveProperty('attention')
-    expect(h.withdrawn).toEqual([key('attention-reply', asked.attention!.id), key('attention-reply', replaced.attention!.id)])
+    expect(cleared.questions!.every(question => question.resolution === 'withdrawn')).toBe(true)
+    expect(h.withdrawn).toEqual(added.questions!.flatMap(question => [`attention-reply:${question.id}`, key('attention-reply', question.id)]))
   })
   it('ends the ticket on a final report: dropped drops it, ready completes it unless it follows a Source\'s Thread that is open', () => {
     const outcome = (state: 'ready' | 'dropped' | 'failed', follows: boolean, closed = false) => {
@@ -810,13 +813,13 @@ describe('worker reports', () => {
     expect(outcome('dropped', true)).toMatchObject({ ended: { by: 'executor', outcome: 'dropped' } })
     expect(outcome('dropped', true).ended).not.toHaveProperty('reason')
     expect(outcome('ready', false)).toMatchObject({ ended: { outcome: 'completed' } })
-    expect(outcome('ready', false)).not.toHaveProperty('attention')
+    expect(outcome('ready', false).questions!.every(question => question.resolution === 'withdrawn')).toBe(true)
     expect(outcome('ready', true)).toMatchObject({ follows: [{ thread: 'gh:pr-9', own: false }, { thread: 'gh:pr-10', own: true }],
       assignments: [expect.objectContaining({ report: expect.objectContaining({ state: 'ready' }) })] })
     expect(outcome('ready', true)).not.toHaveProperty('ended')
-    expect(outcome('ready', true)).not.toHaveProperty('attention')
+    expect(outcome('ready', true).questions!.every(question => question.resolution === 'withdrawn')).toBe(true)
     expect(outcome('ready', true, true)).toMatchObject({ ended: { outcome: 'merged' } })
-    expect(outcome('failed', false)).toMatchObject({ attention: { question: 'Merge it?' } })
+    expect(outcome('failed', false)).toMatchObject({ questions: [expect.objectContaining({ question: 'Merge it?', to: 'person' })] })
     expect(outcome('failed', false)).not.toHaveProperty('ended')
   })
   it('refuses a question with a result or an answer, and questions or answers that name no person\'s message of the ticket', () => {
@@ -837,6 +840,80 @@ describe('worker reports', () => {
     const ticketId = accepted(h).ticketId!
     h.engine.stopTicket(ticketId)
     expect(() => h.engine.report(ticketId, { state: 'progress', summary: 'x' })).toThrow(new UserError('ticketEnded'))
+  })
+})
+describe('questions for the orchestrator', () => {
+  it('answers an orchestrator question with a basis and delivers one answer Input, without a message', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.outbox.length = 0
+    const reported = h.engine.report(ticketId, { state: 'blocked', summary: 'need a decision', question: 'Which layout?',
+      questionFor: 'orchestrator', options: ['a', 'b'], recommend: 'a', questionKey: 'layout', context: 'the ticket' })
+    const question = reported.questions![0]!
+    expect(question).toMatchObject({ to: 'orchestrator', blocking: true, key: 'layout', options: ['a', 'b'], recommend: 'a', context: 'the ticket' })
+    expect(h.outbox).toEqual([])
+    expect(h.engine.answerQuestion(question.id, 'a', 'the ticket admits only a')).toEqual({ questionId: question.id, delivered: true })
+    h.settle()
+    expect(h.delivered).toContainEqual([ticketId, `question-answer:${question.id}`])
+    expect(h.repo.tickets.get(ticketId)!.questions![0]).toMatchObject({ answer: 'a', answeredBy: 'orchestrator',
+      basis: 'the ticket admits only a', resolution: 'answered' })
+    expect(h.outbox).toEqual([])
+    expect(() => h.engine.answerQuestion(question.id, 'again', 'because')).toThrow(new UserError('notOpen'))
+    expect(() => h.engine.answerQuestion('missing', 'a', 'because')).toThrow(new UserError('unknownQuestion'))
+  })
+  it('keeps one open question per key, moves it between targets, and clears the assignment\'s questions', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const first = h.engine.report(ticketId, { state: 'blocked', summary: 'need a decision', question: 'Which layout?',
+      questionFor: 'orchestrator', options: ['a', 'b'], recommend: 'a', questionKey: 'layout' })
+    const id = first.questions![0]!.id
+    const updated = h.engine.report(ticketId, { state: 'progress', summary: 'still working', question: 'Which layout exactly?',
+      questionFor: 'person', questionKey: 'layout' })
+    expect(updated.questions).toHaveLength(1)
+    expect(updated.questions![0]).toMatchObject({ id, question: 'Which layout exactly?', to: 'person', blocking: false })
+    const cleared = h.engine.report(ticketId, { state: 'progress', summary: 'no longer asking', question: null })
+    expect(cleared.questions!.every(question => question.resolution === 'withdrawn')).toBe(true)
+    const report = (extra: object) => h.engine.report(ticketId, { state: 'progress', summary: 'x', ...extra })
+    expect(() => report({ question: 'Q?', questionFor: 'orchestrator', options: ['only'] })).toThrow(new UserError('invalidOptions'))
+    expect(() => report({ question: 'Q?', questionFor: 'orchestrator', options: ['a', 'b'], recommend: 'c' })).toThrow(new UserError('invalidRecommend'))
+    expect(() => report({ question: 'Q?', questionFor: 'orchestrator', questionKey: 'Bad Key' })).toThrow(new UserError('invalidQuestionKey'))
+  })
+  it('escalates an orchestrator question to a person, returns their answer once, and refuses to answer it itself', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const question = h.engine.report(ticketId, { state: 'blocked', summary: 'need a decision', question: 'Which color?',
+      questionFor: 'orchestrator' }).questions![0]!
+    expect(h.engine.escalate(question.id, 'the owner decides colors')).toMatchObject({ questionId: question.id, ticketId, already: false })
+    const moved = h.repo.tickets.get(ticketId)!.questions![0]!
+    expect(moved).toMatchObject({ to: 'person', escalation: 'the owner decides colors', blocking: true })
+    expect(h.engine.escalate(question.id, 'again')).toMatchObject({ already: true })
+    expect(() => h.engine.answerQuestion(question.id, 'blue', 'because')).toThrow(new UserError('notOrchestratorQuestion'))
+    expect(() => h.engine.escalate('missing', 'why')).toThrow(new UserError('unknownQuestion'))
+    h.tick(1)
+    h.engine.personAnswered(ticketId, question.id, 'blue')
+    expect(h.repo.tickets.get(ticketId)!.questions![0]).toMatchObject({ answer: 'blue', answeredBy: 'person', resolution: 'answered' })
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer')).toHaveLength(1)
+    h.tick(1)
+    h.engine.personAnswered(ticketId, question.id, 'red')
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer')).toHaveLength(1)
+  })
+  it('lets only the asking assignment resolve a question, and withdraws open questions when the ticket ends', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const question = h.engine.report(ticketId, { state: 'progress', summary: 'curious', question: 'Which?',
+      questionFor: 'orchestrator' }).questions![0]!
+    const assignment = h.repo.tickets.get(ticketId)!.assignments.at(-1)!
+    expect(() => h.engine.resolveQuestion(ticketId, question.id, 'other')).toThrow(new UserError('notAskingAssignment'))
+    expect(h.engine.resolveQuestion(ticketId, question.id, assignment.id)).toEqual({ questionId: question.id })
+    expect(() => h.engine.resolveQuestion(ticketId, question.id, assignment.id)).toThrow(new UserError('notOpen'))
+    const second = h.engine.report(ticketId, { state: 'blocked', summary: 'still blocked', question: 'And this?',
+      questionFor: 'person' }).questions!.find(item => item.resolution === undefined)!
+    h.engine.stopTicket(ticketId)
+    const ended = h.repo.tickets.get(ticketId)!
+    expect(ended.questions!.every(item => item.resolution !== undefined)).toBe(true)
+    expect(ended.questions!.some(item => item.resolution === 'withdrawn')).toBe(true)
+    expect(ended.inputs.some(input => input.kind === 'answer')).toBe(false)
+    expect(second.to).toBe('person')
   })
 })
 describe('outcomes', () => {
@@ -1040,8 +1117,8 @@ describe('replies', () => {
     const quiet = accepted(h, '9', 't9').ticketId!
     expect(() => h.engine.reply({ purpose: 'attention', ticketId: quiet, text: 'Anything to send.' })).toThrow(new UserError('notAttention'))
     expect(() => h.engine.reply({ purpose: 'attention', ticketId: quiet, question: '', text: 'Anything to send.' })).toThrow(new UserError('notAttention'))
-    const attention = h.repo.tickets.get(ticketId)!.attention!
-    expect(h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' }).id).toBe(key('attention-reply', attention.id))
+    const question = h.repo.tickets.get(ticketId)!.questions!.find(item => item.question === 'Which color?')!
+    expect(h.engine.reply({ purpose: 'attention', ticketId, question: 'Which color?', text: 'Which color?' }).id).toBe(`attention-reply:${question.id}`)
     // A question goes where the message that raised it was written.
     expect(h.outbox.at(-1)!.channel).toEqual(asked.channel)
     h.engine.report(ticketId, { state: 'ready', summary: 'Done' })
@@ -1636,5 +1713,47 @@ describe('ignores from the card', () => {
     // Accepting an inferred candidate still takes an assessment's matched rules.
     h.engine.receive(trigger('5', { actor: guest })); h.engine.reevaluate('5'); h.pump()
     expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
+  })
+})
+describe('agenda wake', () => {
+  const at = '2026-09-23T01:00:00.000Z'
+  it('delivers one automatic agenda Input and records nothing twice for the same key and time', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    expect(h.engine.agenda(ticketId, 'check', 'See whether CI passed', at)).toBe('delivered')
+    expect(h.engine.agenda(ticketId, 'check', 'See whether CI passed', at)).toBe('delivered')
+    const ticket = h.repo.tickets.get(ticketId)!
+    const inputs = ticket.inputs.filter(input => input.kind === 'agenda')
+    expect(inputs).toEqual([expect.objectContaining({ id: `agenda:${ticketId}:check:${at}`, kind: 'agenda', text: 'See whether CI passed' })])
+    h.settle()
+    expect(h.delivered.map(([, id]) => id)).toContain(`agenda:${ticketId}:check:${at}`)
+  })
+  it('keeps a wake waiting while the ticket waits for a person and delivers it after their message', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.tick(1); h.engine.report(ticketId, { state: 'blocked', summary: 'Which page?' })
+    expect(h.engine.agenda(ticketId, 'check', 'Look again', at)).toBe('waiting')
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'agenda')).toBe(false)
+    h.tick(1); h.engine.receive(trigger('2'))
+    expect(h.engine.agenda(ticketId, 'check', 'Look again', at)).toBe('delivered')
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'agenda')).toBe(true)
+  })
+  it('drops a wake for an ended or missing ticket and resumes neither', () => {
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const h = harness({}, { emit: event => events.push(event) })
+    const ticketId = accepted(h).ticketId!
+    h.engine.stopTicket(ticketId, 'not needed')
+    expect(h.engine.agenda(ticketId, 'check', 'Look again', at)).toBe('ended')
+    expect(h.engine.agenda('missing', 'check', 'Look again', at)).toBe('missing')
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeDefined()
+    expect(events.filter(event => event.type === 'agenda.dropped').map(event => event.data.ticketId)).toEqual([ticketId, 'missing'])
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'agenda')).toBe(false)
+  })
+  it('truncates a long reason to the 500 characters the Input stores', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.agenda(ticketId, 'check', 'x'.repeat(600), at)
+    const input = h.repo.tickets.get(ticketId)!.inputs.find(input => input.kind === 'agenda')!
+    expect(input.kind === 'agenda' && input.text).toBe('x'.repeat(500))
   })
 })

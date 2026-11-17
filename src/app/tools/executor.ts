@@ -1,6 +1,6 @@
 /** Executor Session tools for reading ticket context, acknowledging requests, managing threads, handing back out-of-scope triggers, and reporting status. */
 import { z } from 'zod'
-import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
+import { latestAssignment, liveTicket, UserError, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
 import type { SourceContext } from '../../sources/host.ts'
@@ -11,7 +11,7 @@ import type { Sessions } from '../sessions.ts'
 import { AcknowledgementSchema, readTool, tool, type Tool } from './tool.ts'
 
 export interface ExecutorToolsHost {
-  readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext'>
+  readonly engine: Pick<EngineForExecutor, 'report' | 'reply' | 'markUnrelated' | 'handback' | 'followForContext' | 'resolveQuestion'>
   readonly store: Pick<Store, 'tickets' | 'replyStatus' | 'atomic'>
   readonly sessions: Pick<Sessions, 'relay' | 'notify'>
   readonly resources: ResourceHost
@@ -72,17 +72,36 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       execute: async args => ({ trigger_id: args.trigger_id, queued: host.engine.handback(ticketId, args.trigger_id, args.reason) }),
     }),
     tool({
+      name: 'orchestrator_resolve',
+      description: 'Close a question you asked that no longer needs an answer, such as one whose premise changed; only the assignment that asked it may resolve it.',
+      schema: z.object({ question_id: z.string().min(1).describe('The question id returned when you asked it.') }).strict(),
+      execute: async args => {
+        const current = host.store.tickets.get(ticketId)
+        const assignment = current ? latestAssignment(current) : undefined
+        if (!assignment) throw new UserError('unknownAssignment')
+        const { questionId } = host.engine.resolveQuestion(ticketId, args.question_id, assignment.id)
+        return { resolved: true, question_id: questionId }
+      },
+    }),
+    tool({
       name: 'orchestrator_report',
       description: 'Report progress, ready, blocked, failed or dropped, as the work and handoff sections say.',
       schema: z.object({
         state: z.enum(['progress', 'ready', 'blocked', 'failed', 'dropped']),
         summary: z.string().min(1),
-        human_action: z.string().trim().min(1).max(1000).nullish().describe('One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it.'),
-        question_for_trigger_id: z.string().optional().describe('With human_action: the human message that raised the question, which is asked where that person wrote.'),
+        human_action: z.string().trim().min(1).max(1000).nullish().describe('One concrete question for a person (alias of question, and question_for=person), also with state=progress; omit to leave open questions alone, null to withdraw this assignment\'s open ones.'),
+        question: z.string().trim().min(1).max(1000).nullish().describe('A question: the main Session answers it by default, or a person with question_for=person. Omit to leave open questions alone, null to withdraw this assignment\'s open ones.'),
+        question_for: z.enum(['orchestrator', 'person']).optional().describe('Who answers the question; defaults to person. Ask the orchestrator for direction within its existing work, and a person only for decisions or resources the orchestrator cannot supply.'),
+        options: z.array(z.string().trim().min(1).max(200)).min(2).max(5).optional().describe('Two to five choices, when the question has them.'),
+        recommend: z.string().trim().min(1).max(200).optional().describe('One of options that you recommend.'),
+        key: z.string().optional().describe('Stable name: a later open question with the same key updates this one instead of asking a new one.'),
+        context: z.string().trim().min(1).max(500).optional().describe('Why you ask, in your own words; shown with the question.'),
+        question_for_trigger_id: z.string().optional().describe('With a question for a person: the human message that raised it, which is asked where that person wrote.'),
         pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
       }).strict(),
       execute: async (args, signal) => {
+        if (args.question !== undefined && args.human_action !== undefined) throw new UserError('ambiguousQuestion')
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
         const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
@@ -90,14 +109,21 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         return host.store.atomic(() => {
           const refused = pull && claimPull(host.github, ticketId, pull)
           if (refused) throw new Error(refused)
-          const report = { state: args.state, summary: args.summary, ...(args.human_action !== undefined ? { question: args.human_action } : {}),
+          const question = args.question !== undefined ? args.question : args.human_action
+          const report = { state: args.state, summary: args.summary,
+            ...(question !== undefined ? { question, questionFor: args.question_for ?? 'person' } : {}),
+            ...(args.options ? { options: args.options } : {}), ...(args.recommend ? { recommend: args.recommend } : {}),
+            ...(args.key ? { questionKey: args.key } : {}), ...(args.context ? { context: args.context } : {}),
             ...(args.question_for_trigger_id ? { askedBy: args.question_for_trigger_id } : {}),
             ...(args.reply_to_trigger_id ? { answers: args.reply_to_trigger_id } : {}) }
           const updated = host.engine.report(ticketId, report)
           const relay = reportRelay(updated, report)
           if (relay) host.sessions.relay(relay.id, relay.text)
+          const asked = latestAssignment(updated)?.report?.questionId
+          const open = asked ? updated.questions?.find(item => item.id === asked && item.resolution === undefined) : undefined
           const notification = relay ? 'orchestrator' : 'internal_only'
-          return { reported: true, notification, ...(updated.attention ? { attention: updated.attention } : {}) }
+          return { reported: true, notification, ...(open ? { question: { id: open.id, question: open.question, to: open.to,
+            ...(open.options ? { options: open.options } : {}), ...(open.recommend ? { recommend: open.recommend } : {}), blocking: open.blocking } } : {}) }
         })
       },
     }),

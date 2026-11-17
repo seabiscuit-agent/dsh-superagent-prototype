@@ -250,9 +250,13 @@ it('returns where a reply stands: sent, or dropped when its conversation can no 
   const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done.' })
   const reply = (text: string) => h.runTool(h.runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text })
-  expect(await reply('修好了。')).toEqual({ status: 'sent' })
+  expect(await reply('修好了。')).toMatchObject({ status: 'sent' })
+  const second = await h.acceptedTicket(feishu('2', '@bot 另一个回归'))
+  await h.runTool(second.sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done again.' })
   vi.mocked(Commands.prototype.lark).mockRejectedValue(new CliError('the message was withdrawn', 230011))
-  expect(await reply('修好了，请看 PR。')).toEqual({ status: 'dropped' })
+  expect(await h.runTool(h.runtime.masterId, 'orchestrator_reply', {
+    ticket_id: second.ticket.id, purpose: 'result', text: '修好了，请看 PR。',
+  })).toMatchObject({ status: 'dropped' })
 })
 
 it('checks an acknowledgement against the IM word limit, not a character count', async () => {
@@ -419,8 +423,10 @@ it('relays a worker\'s report with its ticket card and the start of its summary,
   const { ticket, trigger, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   await h.runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'Needs a decision.', human_action: 'Desktop too?' })
   await h.runtime.idle()
-  expect(relaysOf('worker_attention').at(-1)).toEqual({ kind: 'worker_attention', state: 'progress', read: `ticket/${ticket.id}/result`,
-    ticket: expect.objectContaining({ ticket_id: ticket.id, state: 'person/answer', attention: expect.objectContaining({ question: 'Desktop too?' }) }) })
+  expect(relaysOf('worker_attention').at(-1)).toEqual({ kind: 'worker_attention', state: 'progress', blocking: false,
+    question: 'Desktop too?', question_id: expect.any(String), read: `ticket/${ticket.id}/result`,
+    ticket: expect.objectContaining({ ticket_id: ticket.id, state: 'working',
+      questions: [expect.objectContaining({ to: 'person', blocking: false, preview: 'Desktop too?' })] }) })
   const summary = 'Done. ' + 'Evidence. '.repeat(100)
   await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary, human_action: null })
   await h.runtime.idle()

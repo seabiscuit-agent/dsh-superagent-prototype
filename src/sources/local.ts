@@ -14,8 +14,8 @@ export const SOURCE = 'local'
 export const OWNER_ID = 'owner'
 /** The allowed-sender entry the runtime presets for the owner; the panel may rename or extend it afterwards. */
 export const OWNER = { id: OWNER_ID, name: 'Owner' } as const
-/** The local Source has no configuration of its own: its identity is the main session itself. */
-const LocalConfigSchema = z.object({}).strict()
+/** The local Source's own configuration: the language of the confirmations the host writes for `!dispatch`, when set. */
+const LocalConfigSchema = z.object({ language: z.enum(['zh', 'en']).optional() }).strict()
 export type LocalConfig = z.infer<typeof LocalConfigSchema>
 
 /** Deterministic trigger ID for one main-session message; every replay of that message produces the same ID. */
@@ -58,7 +58,9 @@ export const localKind: SourceKind<LocalConfig> = {
       + 'with no @ and no button. Replies and confirmations render back into the same conversation as notice rows.',
   },
   schema: LocalConfigSchema,
-  fields: [],
+  fields: [{ key: 'language', type: 'select', label: { zh: '确认语', en: 'Confirmation language' },
+    options: [{ value: 'zh', label: { zh: '中文', en: 'Chinese' } }, { value: 'en', label: { zh: 'English', en: 'English' } }],
+    hint: { zh: '`!dispatch` 机械接单时确认语的语言；不设置时这类消息回退给编排者判断。', en: 'The language of the confirmation when `!dispatch` accepts mechanically; unset, such messages go to the orchestrator.' } }],
   health: ['local'],
   // Messages in the main session reach the orchestrator before any ticket: discussion is answered in conversation, and work
   // starts or resumes a ticket only when the orchestrator routes it there.

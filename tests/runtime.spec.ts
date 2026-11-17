@@ -26,7 +26,7 @@ import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, typ
 import { feishuTrigger } from '../src/sources/feishu.ts'
 import { feishuChannel } from '../src/sources/feishu-trigger.ts'
 import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
-import { IM_WORDS } from '../src/infra/text.ts'
+import { IM_WORDS, wordCount } from '../src/infra/text.ts'
 import { observePull, pullOf } from '../src/sources/github-pull.ts'
 import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
 import { policyHistory } from '../src/app/settings-history.ts'
@@ -324,13 +324,15 @@ it('accepts silently under a rule that says so, gives the worker the rule proced
   await runtime.idle()
   expect(sections.get(`worker-${ticket.id}`)!.text({})).toContain(mandateInstructions({ strength: 'inferred' }))
   expect(await runTool(`worker-${ticket.id}`, 'orchestrator_read', { resource: `ticket/${ticket.id}/assignment` })).toMatchObject({ text: expect.stringContaining('沉默地复现和修复 (silent-bugfix): Reproduce minimally first; accept silently.') })
-  await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: 'x' })).rejects.toThrow('not ready')
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: 'x' }))
+    .toMatchObject({ status: 'rejected', reason: 'notReady' })
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'blocked', summary: 'needs a decision' })
-  await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: 'x' })).rejects.toThrow('not ready')
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: 'x' }))
+    .toMatchObject({ status: 'rejected', reason: 'notReady' })
   // Nothing left for a human: the ticket closes instead of waiting, and the rule's closing sentence can still be delivered.
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'dropped', summary: 'too complex; recorded in #123' })
   expect(runtime.store.tickets.get(ticket.id)).toMatchObject({ ended: expect.objectContaining({ by: 'executor', outcome: 'dropped' }) })
-  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: '看到这个问题我试了一下，能复现，修复需要较大改动，已记在 #123。' })).toEqual({ status: 'sent' })
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: '看到这个问题我试了一下，能复现，修复需要较大改动，已记在 #123。' })).toMatchObject({ status: 'sent' })
 })
 
 it('records worker reports, binds the task PR, ends the ticket on ready without a PR, and relays attention', async () => {
@@ -339,23 +341,26 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
   expect(await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'started' })).toMatchObject({ notification: 'internal_only' })
   expect(relays(runtime.masterId)).toEqual([])
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'need a decision', human_action: 'Desktop too?' })
-  expect(runtime.store.tickets.get(ticket.id)!.attention).toMatchObject({ question: 'Desktop too?' })
-  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_attention', ticket: { ticket_id: ticket.id, attention: { question: 'Desktop too?' } } })
+  expect(runtime.store.tickets.get(ticket.id)!.questions![0]).toMatchObject({ question: 'Desktop too?', to: 'person' })
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_attention', question: 'Desktop too?', ticket: { ticket_id: ticket.id, questions: [{ preview: 'Desktop too?' , to: 'person' }] } })
   conclusions.clear()
-  await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'other', text: 'x' })).rejects.toThrow('current attention question')
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', question_id: 'missing' }))
+    .toMatchObject({ status: 'rejected', reason: 'missingQuestion' })
   expect(conclusions.has(`${runtime.masterId}:orchestrator_reply`)).toBe(false)
   // A delivered receipt is the owner-facing message: the reply tool concludes its turn so no duplicate body follows.
-  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'Desktop too?', text: '要不要也改桌面端？' })).toEqual({ status: 'sent' })
+  const asked = runtime.store.tickets.get(ticket.id)!.questions![0]!
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', question_id: asked.id }))
+    .toMatchObject({ status: 'sent' })
   expect(conclusions.has(`${runtime.masterId}:orchestrator_reply`)).toBe(true)
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 42, human_action: null })
   const bound = runtime.store.tickets.get(ticket.id)!
   expect(pullOf(bound)).toBe(42)
-  expect(bound.attention).toBeUndefined()
+  expect(bound.questions!.every(question => question.resolution !== undefined)).toBe(true)
   expect(runtime.store.threads.get('github:42')?.subscriptions).toEqual([ticket.id])
   await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'reviewed' })
   expect(runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
   expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_report', state: 'ready' })
-  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: '已提交 PR #42，待 review。' })).toEqual({ status: 'sent' })
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: '已提交 PR #42，待 review。' })).toMatchObject({ status: 'sent' })
   const mergedAt = new Date().toISOString()
   const merged = { number: 42, state: 'closed', merged: true, merged_at: mergedAt, html_url: 'https://github.com/acme/widgets/pull/42',
     user: { login: 'agent-bot' }, head: { sha: 'abc', ref: 'agent/x', repo: { full_name: 'acme/widgets' } } }
@@ -371,7 +376,7 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
 })
 
 it('keeps a master turn that owes the owner a word from closing silently after a worker report', async () => {
-  const { sessionId } = await acceptedTicket()
+  const { sessionId, ticket } = await acceptedTicket()
   await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'reviewed' })
   const report = masterDeliveries().at(-1)!
   expect(report.text).toContain('"worker_report"')
@@ -380,8 +385,11 @@ it('keeps a master turn that owes the owner a word from closing silently after a
   master.session.append('turn/start', { turn: 42 })
   master.session.append('user/message', { id: report.id, role: 'user', content: [{ type: 'text', text: report.text }], source: { kind: 'dsh-superagent', form: 'relay' } })
   ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/turn-stopping', { agent: agents.get(runtime.masterId), turn: 42, signal: new AbortController().signal } as never)
-  expect(masterDeliveries()).toEqual([expect.objectContaining({ mode: 'steer', id: 'dsh-superagent:turn-check:42' })])
-  expect(masterDeliveries()[0]!.text).toContain('Turn check')
+  await runtime.idle()
+  // The host sends the receipt the turn owes instead of nudging the model to restate it.
+  const reportAt = runtime.store.tickets.get(ticket.id)!.assignments.at(-1)!.report!.at
+  expect(runtime.store.receipts.get(`result:${ticket.id}:${reportAt}`)).toMatchObject({ status: 'sent' })
+  expect(masterDeliveries().some(delivery => delivery.id === 'dsh-superagent:turn-check:42')).toBe(false)
 })
 
 it('lists each ticket with the Threads it subscribes to, as their Sources describe them', async () => {
@@ -796,11 +804,13 @@ it('asks a question where the human message that raised it was written, not in t
   await expect(runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'x', human_action: 'Keep it?', question_for_trigger_id: 'unknown' })).rejects.toThrow('the person\'s message that raised it')
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'no stop reason is recorded', human_action: 'Keep the PR and record the reason in a follow-up?', question_for_trigger_id: review.id })
   const queued = vi.spyOn(runtime.outbox, 'send')
-  await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'Keep the PR and record the reason in a follow-up?', text: 'Keep the PR and record the reason in a follow-up?' })
+  const reviewQuestion = runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.question.startsWith('Keep the PR'))!
+  await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', question_id: reviewQuestion.id })
   expect(queued.mock.calls.at(-1)![0].channel).toEqual(review.channel)
   // A question about the ticket as a whole still goes to where the ticket started.
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'y', human_action: 'Desktop too?' })
-  await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'Desktop too?', text: '要不要也改桌面端？' })
+  const desktopQuestion = runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.question === 'Desktop too?')!
+  await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', question_id: desktopQuestion.id })
   expect(queued.mock.calls.at(-1)![0].channel).toEqual(trigger.channel)
 })
 
@@ -969,9 +979,44 @@ it('checks a changed account CLI before saving it, restarts after the save, and 
   await expect(feishuSave(BOT())).rejects.toMatchObject({ code: 'feishuUserIdentity', values: { mode: 'off' } })
 })
 
+it('answers a worker question in the main Session, escalates one to a person, returns the person answer to the worker, and lets the asker resolve one', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  deliveries.mockClear()
+  await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'need a decision', question_for: 'orchestrator',
+    question: 'Which layout?', options: ['a', 'b'], recommend: 'a', key: 'layout', context: 'both fit' })
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_question', question: 'Which layout?', options: ['a', 'b'], recommend: 'a' })
+  const asked = runtime.store.tickets.get(ticket.id)!.questions![0]!
+  expect(asked).toMatchObject({ to: 'orchestrator', blocking: true, key: 'layout' })
+  await expect(runTool(runtime.masterId, 'orchestrator_answer', { question_id: asked.id, answer: 'a', basis: '' })).rejects.toThrow('basis')
+  expect(await runTool(runtime.masterId, 'orchestrator_answer', { question_id: asked.id, answer: 'a', basis: 'only a fits' }))
+    .toEqual({ answered: true, delivered: true, question_id: asked.id })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === asked.id))
+    .toMatchObject({ resolution: 'answered', answeredBy: 'orchestrator', answer: 'a' })
+  expect(runtime.store.tickets.get(ticket.id)!.inputs.at(-1)).toMatchObject({ kind: 'answer', text: 'a', answeredBy: 'orchestrator' })
+  // A question can move from the main Session to a person, whose answer goes back to the worker after its send.
+  await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'need the owner', question: 'Which color?', question_for: 'orchestrator' })
+  const moved = runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.resolution === undefined)!
+  expect(await runTool(runtime.masterId, 'orchestrator_escalate', { question_id: moved.id, reason: 'the owner picks colors' }))
+    .toMatchObject({ escalated: true, sent: true })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === moved.id))
+    .toMatchObject({ to: 'person', escalation: 'the owner picks colors' })
+  const answer = feishu('2', '蓝色', { root_id: 'om_1' })
+  await receive(answer)
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { trigger_id: answer.id, question_id: moved.id, purpose: 'answer', text: '蓝色' }))
+    .toMatchObject({ status: 'sent' })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === moved.id))
+    .toMatchObject({ resolution: 'answered', answeredBy: 'person', answer: '蓝色' })
+  expect(runtime.store.tickets.get(ticket.id)!.inputs.at(-1)).toMatchObject({ kind: 'answer', text: '蓝色', answeredBy: 'person' })
+  // The asking assignment can close a question whose premise changed.
+  await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'still checking', question: 'Still needed?', question_for: 'orchestrator' })
+  const later = runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.resolution === undefined)!
+  expect(await runTool(sessionId, 'orchestrator_resolve', { question_id: later.id })).toEqual({ resolved: true, question_id: later.id })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === later.id)!.resolution).toBe('resolved')
+})
+
 it('lists Tickets that wait on a person with where to answer them, as the overview does', async () => {
   const { ticket, sessionId } = await acceptedTicket()
-  await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'need a decision', human_action: '按钮用哪种颜色？' })
+  await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'need a decision', human_action: '按钮用哪种颜色？' })
   expect(ticketList(viewsOf(runtime), 'person', 0, 20).items).toEqual([expect.objectContaining({ id: ticket.id, stage: 'person', reply: expect.objectContaining({ source: 'feishu' }) })])
 })
 
@@ -1426,7 +1471,9 @@ it('keeps replies and acknowledgements to an IM conversation within the IM limit
   const { ticket, trigger, sessionId } = await acceptedTicket()
   const long = Array.from({ length: IM_WORDS + 1 }, () => 'word').join(' ')
   await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'reviewed' })
-  await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: long })).rejects.toThrow(`maximum is ${IM_WORDS}`)
+  const receipt = await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text: long }) as { status: string; receipt_id: string }
+  expect(receipt.status).toBe('sent')
+  expect(wordCount(runtime.store.receipts.get(receipt.receipt_id)!.text)).toBeLessThanOrEqual(IM_WORDS)
   const follow = feishu('3', '还有一个问题', { mentions: [], root_id: trigger.meta.messageId as string, sender_id: MEMBER })
   await receive(follow)
   await expect(runTool(sessionId, 'orchestrator_ack', { trigger_id: follow.id, text: long })).rejects.toThrow(`at most ${IM_WORDS} words`)
@@ -1874,3 +1921,44 @@ it('keeps the Policy the main Session judges by in its prompt, after admission a
   expect(policy()).toContain('No rule is enabled: a proactive candidate can only be ignored.')
   expect(policy()).toContain('The accept mode and the rules decide proactive candidates only')
 })
+
+it('schedules, replaces and cancels one wake per ticket and key, and shows it on the ticket page until it fires', async () => {
+  const { ticket, sessionId } = await acceptedTicket(feishu('31', '@bot 修一下回归'))
+  // The tool is the main Session's alone: a worker cannot schedule its own wake.
+  expect(tools.get(sessionId)?.has('orchestrator_schedule')).toBe(false)
+  const at = '2030-01-01T00:00:00.000Z'
+  expect(await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', at, reason: 'check CI' }))
+    .toEqual({ scheduled: true, key: 'ci', at })
+  const later = '2030-01-02T00:00:00.000Z'
+  await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', at: later, reason: 'check CI again' })
+  expect(runtime.effects.agendaRows(ticket.id)).toEqual([{ key: 'ci', at: later, reason: 'check CI again' }])
+  expect((await api('GET', `tickets/${ticket.id}`)).body).toMatchObject({ agenda: [{ key: 'ci', at: later, reason: 'check CI again' }] })
+  expect(await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', cancel: true }))
+    .toEqual({ cancelled: true, key: 'ci' })
+  expect(runtime.effects.agendaRows(ticket.id)).toEqual([])
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'Bad Key', reason: 'x' })).rejects.toThrow('must match')
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', reason: ' ' })).rejects.toThrow('1 to 500')
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', at: 'soon', reason: 'x' })).rejects.toThrow('parseable')
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: 'nope', key: 'ci', reason: 'x' })).rejects.toThrow('ticket')
+})
+
+it('delivers a due wake to the running worker as a scheduled agenda Input and forgets it', async () => {
+  const { ticket, sessionId } = await acceptedTicket(feishu('32', '@bot 修一下回归'))
+  deliveries.mockClear()
+  await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'now', at: new Date().toISOString(), reason: 'look again' })
+  await vi.waitFor(() => expect(deliveries.mock.calls.some(([call]) => call.sessionId === sessionId && call.text.includes('Scheduled wake'))).toBe(true))
+  expect(runtime.store.tickets.get(ticket.id)!.inputs).toContainEqual(expect.objectContaining({ kind: 'agenda', text: 'look again' }))
+  await vi.waitFor(() => expect(runtime.effects.agendaRows(ticket.id)).toEqual([]))
+})
+
+it('drops a wake whose ticket ended and tells the main Session once', async () => {
+  const { ticket } = await acceptedTicket(feishu('33', '@bot 修一下回归'))
+  deliveries.mockClear()
+  await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'late', at: new Date(Date.now() + 30).toISOString(), reason: 'too late' })
+  runtime.engine.stopTicket(ticket.id, 'not needed')
+  await new Promise(resolve => setTimeout(resolve, 50))
+  runtime.passes.request()
+  await vi.waitFor(() => expect((agents.get(runtime.masterId)!.inject as ReturnType<typeof vi.fn>).mock.calls
+    .some(call => JSON.stringify(call).includes('agenda_dropped'))).toBe(true), { timeout: 5_000 })
+  expect(runtime.store.tickets.get(ticket.id)!.inputs.some(input => input.kind === 'agenda')).toBe(false)
+}, 15_000)

@@ -1,52 +1,50 @@
-# 三 P0 的 OpenSpec 承接
+# 三 P0 的 OpenSpec 实施
 
-日期：2026-11-17
-变更：
-- `openspec/changes/ticket-agenda/`（P0-1 时间维度）
-- `openspec/changes/orchestrator-consult/`（P0-2 问题与答复）
-- `openspec/changes/host-owned-mechanics/`（P0-3 机械规则下沉）
+日期：2026-11-17；变更：`ticket-agenda`（P0-1）、`orchestrator-consult`（P0-2）、`host-owned-mechanics`（P0-3）。
 
 ## 根因
 
-- P0-1：系统只有 Trigger，没有「未来某个时刻唤醒工单」的一等状态；`Passes` 每 2 秒只扫
-  已到期项，`evaluateDue` 只处理已 due 的 Eval/未投递 Input/待评估线程。
-- P0-2：`Ticket` 只有一个 `attention`，worker 只能向人提问；人的答复只进 outbox，没有路径
-  写回 worker 会话，也没有「先问 orchestrator，超授权再升级」这一层。
-- P0-3：路由、回复用途、可见性、重启、成本、审查轮次等机械规则写在 60K 提示词里，靠模型
-  自觉；空回合、内部载荷、重复回复只能用 turn-guard/filter 事后补。
+- P0-1：只有 Trigger，没有「未来某刻唤醒工单」的一等状态；`Passes` 每 2 秒只扫已到期项。
+- P0-2：`Ticket` 只有一个 `attention`，worker 只能问人；人的答复没有路径写回 worker，也没有「先问 orchestrator，超授权再升级」这一层。
+- P0-3：路由、回复用途、可见性、重启、成本、审查轮次等机械规则写在 60K 提示词里，靠模型自觉。
 
-## 承接
+## 实施
 
-每个 P0 一个 change，一个意图，四件套齐全；`tasks.md` 全部未勾，本阶段不改运行时代码。
+### P0-1 ticket-agenda（已完成）
 
-- `ticket-agenda`：复用 Effects 表的 `due`/`(kind,key)` 去重/重启恢复，新增 `agenda` effect
-  与 `orchestrator_schedule`，到点投递一条 `agenda` Input 唤醒工单；ended 丢弃、paused 暂停、
-  同 key 覆盖、只补最近一次。cron Source 明确不做，留给后续。
-- `orchestrator-consult`：`questions: Question[]` 替换单槽 attention；`question_for` 支持
-  orchestrator/person；`orchestrator_answer`（带 basis）与 `orchestrator_escalate`；答复作为
-  `answer` Input 回到 worker；key 去重、resolve、旧 attention 迁移、新 stage。
-- `host-owned-mechanics`：`orchestrator_reply` 结构化 receipt，result/attention 正文由 host
-  合成，拒绝空回合/内部载荷/重复；本地首行 `!dispatch`/`!discussion` 机械分流；提示词预算
-  基线棘轮。
+- 复用 Effects 的 `due` 与 `(kind,key)`：`enqueue(...,at?)`、`agenda` payload `{ticketId,key,reason,at}`、key `ticket:<id>:<key>`；不改 `Passes` tick 与 `evaluateDue`。
+- 主会话工具 `orchestrator_schedule`：校验 ticket/key/reason/at，同 key 覆盖，cancel 删除。
+- `agendaHandler` 到点调 `Engine.agenda`：等待人抛 `Later`（2 秒重试，不消耗失败次数）；已结束发 `agenda.dropped` 且不唤醒；否则追加幂等的 `agenda` Input；paused 时 limit=0。
+- `ticket/<id>` 与 `GET tickets/<id>` 增加 `agenda: [{key,at,reason}]`；Ticket JSON 不变。
 
-顺序：P0-1 可独立 → P0-2（替换 attention）→ P0-3（attention 合成依赖 Question）。测量阶段
-（usage/compaction/等待时长）是 review 的阶段 0，不在本提案内。
+### P0-2 orchestrator-consult（已完成）
+
+- `Ticket.questions` 取代 `attention`；旧 attention 读取时迁移为一条 `to:person` 问题并保留 id。问题默认问人，`question_for:'orchestrator'` 先问主会话；`state=blocked` 才 blocking；同 key 更新，`null` 撤回，ready 结掉本 assignment 的问题。
+- `orchestrator_answer` 带 basis 回答并投递 `question-answer:<id>` answer Input，不写 outbox；`orchestrator_escalate` 升级为人的问题并记录理由；人答复后 `purpose=answer` 发送成功，outbox 的 `questionId` 回调写回 worker；`orchestrator_resolve` 只允许提问的 assignment。
+- stage 增加 `orchestrator/answer`，person blocking 优先；卡片/详情/面板/read 显示 questions。
+- 与 spec 偏差：spec 说 attention 发送成功即写回答复，但 attention 正文是问题，实现改在 `purpose=answer` 成功后写回，PR 中说明。
+
+### P0-3 host-owned-mechanics（已完成）
+
+- `src/app/receipts.ts`：result 正文由最新 report 合成（状态标签、summary、PR 链接），attention 由 Question 合成；answer 保留模型文本但拒绝空/静默/内部载荷/超长；确定性 id `result:<ticket>:<report.at>`、`attention-reply:<qid>`、`reply:<trigger>:<sha1>`。
+- `orchestrator_reply` 只收结构化字段，返回 `{receipt_id,status,reason?}`；拒绝时不入 outbox；sent 后 `concludeTurn()`。`TurnGuard` 回合结束对有 ready report 或 person 问题但无 receipt 的回合发一次兜底 receipt，绝不自造 orchestrator 答案。
+- 本地 Source 首行前缀：`!dispatch` 机械 accept（不跑 assessor）、`!discussion` 永不建单、`!!` 转义；确认语取本地 Source `language`（zh/en），缺失/失败回退主会话；发 `dispatch.fast_path` 事件。
+- `tests/model-surface.baseline.json` 按 surface 记录长度；超过即失败，只能删文本或手动更新。
 
 ## 坑
 
-- OpenSpec strict 只检查 requirement 正文的**第一行**是否含 SHALL/MUST；换行把关键词放到第二行
-  会报 `must contain SHALL or MUST`，必须把模态词写进首行。
-- 场景标题必须四个 `#`；delta 里 SHOULD/MAY 会被拒；`## Purpose` 至少 50 字符。
-- `openspec new change` 只生成 `.openspec.yaml` 和 README，其余文件要自己写。
-- 纯文档变更不截图，验收必须写命令/字段/期望/实例（`:3082`）以及「新会话只读文档能否接手」。
-- owner 已明确：讨论完成前只写提案，不实施、不勾任务。
+- OpenSpec strict 只检查 requirement 正文第一行的 SHALL/MUST；场景标题四个 `#`；delta 里 SHOULD/MAY 会被拒；`## Purpose` 至少 50 字符。
+- `npx -y openspec@latest` 报 "could not determine executable to run"；用已安装的 `openspec` 1.4.1。
+- 新增源码/测试文件必须进 `docs/007-architecture.md` 的 Modules/Tests 表。
+- `tests/locales.spec.ts` 要求中英文占位符一致，每个 effect kind 有 `health.<kind>`；`model-surface` 预算随工具调整（当前 orchestrator 66_000 / worker 43_000）。
+- agenda fake engine 返回联合类型时，`vi.fn` 的返回类型要显式标注，否则 TS2322。
 
 ## 验证
 
 ```bash
-openspec validate --all --strict   # 6 passed, 0 failed
-openspec list                      # 三个 change，tasks 全 0
+env -u GIT_CONFIG_GLOBAL pnpm vitest run   # 69 files / 1295 tests passed
+pnpm check
+openspec validate --all --strict           # 6 passed, 0 failed
 ```
 
-交接：新会话只读每个 change 的 proposal/spec/design/tasks，能复述范围、字段、验收命令和
-明确不做；实现从 tasks 的 1.1 开始，不依赖本 note。
+冒烟：分支实例 `127.0.0.1:3153`（非 `:3082`）完成 agenda（90 秒后唤醒一次、Input 送达）、consult orchestrator 问答闭环、mechanics `!dispatch` 机械接单与 `!discussion` 不建单；escalate/人答/旧 attention 仍只有自动化测试覆盖。

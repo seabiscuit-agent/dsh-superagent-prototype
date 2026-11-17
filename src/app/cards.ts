@@ -1,6 +1,6 @@
 /** Compact, bounded model-facing projections of triggers, tickets, threads, and decisions; full texts stay behind readable resources. */
-import { latestReport, reasonText, threadKey, ticketStage, type Decision, type Mandate, type Thread, type Ticket, type TicketInput,
-  type Trigger, type TriggerDisposition } from '../core/index.ts'
+import { latestReport, openQuestions, reasonText, threadKey, ticketStage, type Decision, type Mandate, type Thread, type Ticket,
+  type TicketInput, type Trigger, type TriggerDisposition } from '../core/index.ts'
 import { pullOf } from '../sources/github-pull.ts'
 import { batchLine, inputResource } from '../executor/dsh.ts'
 
@@ -14,21 +14,25 @@ export function triggerCard(trigger: Trigger, disposition?: TriggerDisposition) 
       delivered_to: disposition.fanout } } : {}) }
 }
 /** The states a ticket card shows: an open ticket's stage (docs/003), and an ended ticket's outcome. */
-export const TICKET_STATES = ['person/delivery', 'person/answer', 'person/review', 'person/blocked', 'person/failed', 'working', 'working/queued', 'idle',
+export const TICKET_STATES = ['person/delivery', 'person/answer', 'person/review', 'person/blocked', 'person/failed', 'orchestrator/answer',
+  'working', 'working/queued', 'idle',
   'completed', 'merged', 'closed', 'dropped', 'stopped'] as const
 export type TicketCardState = typeof TICKET_STATES[number]
 function cardState(ticket: Ticket): TicketCardState {
   if (ticket.ended) return ticket.ended.outcome
   const stage = ticketStage(ticket)
   if (stage.stage === 'person') return `person/${stage.action}`
+  if (stage.stage === 'orchestrator') return 'orchestrator/answer'
   return stage.stage === 'idle' ? 'idle' : stage.stage === 'working' && stage.action ? 'working/queued' : 'working'
 }
 export function ticketCard(ticket: Ticket) {
   const ended = ticket.ended && { at: ticket.ended.at, by: ticket.ended.by, reason: ticket.ended.reason ?? ticket.ended.outcome }
-  const { attention } = ticket
+  // Open questions stay visible however they are asked; the full text is in ticketDetails and the ticket read.
+  const questions = openQuestions(ticket).map(question => ({ id: question.id, from: question.from, to: question.to, blocking: question.blocking,
+    ...(question.key ? { key: question.key } : {}), preview: preview(question.question) }))
   return { ticket_id: ticket.id, title: ticket.title, state: cardState(ticket), strength: ticket.mandate.strength,
     ...(pullOf(ticket) ? { pr_number: pullOf(ticket) } : {}), ...(ended ? { ended } : {}),
-    ...(attention ? { attention: { question: attention.question, ...attention.triggerId ? { trigger_id: attention.triggerId } : {} } } : {}),
+    ...(questions.length ? { questions } : {}),
     preview: preview(latestReport(ticket)?.summary ?? ''), read: `ticket/${ticket.id}` }
 }
 /** Strips `policyVersion`, an internal hash that callers never query by. */
@@ -40,7 +44,7 @@ export function inputLine(ticket: Ticket, input: TicketInput, worker = false) {
   const read = { read: inputResource(ticket.id, input.id) }
   const names = input.kind === 'trigger' || input.kind === 'resumed' ? { trigger_id: input.triggerId }
     : input.kind === 'reopen' && !worker ? { decision_id: input.decisionId }
-    : input.kind !== 'text' ? read
+    : input.kind !== 'text' && input.kind !== 'agenda' ? read
     : input.text.length <= INPUT_TEXT ? { text: input.text }
     : { preview: preview(input.text).slice(0, INPUT_TEXT), chars: input.text.length, ...read }
   return { kind: input.kind, at: input.at, ...names, ...ticket.undelivered.includes(input.id) ? { undelivered: true } : {} }
@@ -56,11 +60,13 @@ export function newestPage<T, L>(items: readonly T[], offset: number, size: numb
   return { items: newest.slice(offset, offset + size).map(line), ...more ? { next_resource: next, next_offset: offset + size } : {} }
 }
 export interface TicketThread { thread: string; context?: true; bound?: true }
-/** Projects a ticket with its linked triggers, threads, and first pages of assignments and inputs, omitting decision IDs for workers. */
-export function ticketDetails(ticket: Ticket, threads: TicketThread[], batch: readonly Trigger[], worker = false) {
+/** Projects a ticket with its linked triggers, threads, first pages of assignments and inputs, and pending scheduled wakes, omitting decision IDs for workers. */
+export function ticketDetails(ticket: Ticket, threads: TicketThread[], batch: readonly Trigger[], worker = false,
+  agenda: readonly { key: string; at: string; reason: string }[] = []) {
   // Drop card preview because the latest report's preview is already shown on the first assignment entry.
   const { preview: _preview, ...card } = ticketCard(ticket)
   return { ...card, trigger_id: ticket.origin.triggerId, ...batch.length ? { batch: batch.map(batchLine) } : {},
+    ...agenda.length ? { agenda } : {},
     ...worker ? {} : { decision_id: ticket.decisionId }, threads, directory: ticket.execution?.directory,
     scope: ticket.mandate.scope, requested_by: ticket.mandate.actor.id,
     assignments: newestPage(ticket.assignments, 0, ASSIGNMENTS, item => assignmentLine(ticket, item), `ticket/${ticket.id}/assignments`),

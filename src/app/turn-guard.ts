@@ -9,10 +9,10 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { messageId } from './delivery.ts'
 
 /** The hidden closers the panel's chat view drops: a step made only of one gives the owner nothing. */
-const SILENT = /^(?:NO[_-]?REPLY|END[_-]?OF[_-]?TURN|END[_-]?OF[_-]?RESPONSE|SILENT)$/i
+export const SILENT = /^(?:NO[_-]?REPLY|END[_-]?OF[_-]?TURN|END[_-]?OF[_-]?RESPONSE|SILENT)$/i
 /** The internal payloads the panel's chat view drops, which likewise give the owner nothing. */
-const INTERNAL = [/[|｜]{2}\s*DSML\s*[|｜]{2}/u,
-  /"kind"\s*:\s*"(?:worker_report|worker\.report|follow_up|follow\.up|candidate|worker_attention|worker\.attention)"/u,
+export const INTERNAL = [/[|｜]{2}\s*DSML\s*[|｜]{2}/u,
+  /"kind"\s*:\s*"(?:worker_report|worker\.report|follow_up|follow\.up|candidate|worker_attention|worker\.attention|worker_question|worker\.question)"/u,
   /\{\s*"ticket_id"\s*:/u]
 /** The message id of the receipt the host renders for a delivered reply; it is the owner-facing message of that reply. */
 const RECEIPT = 'dsh-superagent:local-receipt:'
@@ -36,6 +36,11 @@ export interface TurnGuardHost {
   readonly context: Context
   /** The main Session whose turns must not end silently after a report. */
   readonly masterId: string
+  /**
+   * Sends the host-composed receipt a turn owes when the model ended without one: a ready result, or attention for a person
+   * question still open. It must never invent an orchestrator answer. The receipt id makes a repeat harmless.
+   */
+  fallback?(ticketId: string, questionId?: string): void
 }
 /** A message's content blocks, which is all a user or assistant message exposes here. */
 type Content = UserMessage['content']
@@ -83,11 +88,44 @@ export function inspectTurn(events: readonly SessionEvent[], turn: number): Turn
       else if (message.id === nudgeId) view.nudged = true
       else {
         const kind = relayKind(message)
-        if (kind === 'worker_report' || kind === 'worker_attention') view.owed = true
+        if (kind === 'worker_report' || kind === 'worker_attention' || kind === 'worker_question') view.owed = true
       }
     }
   }
   return view
+}
+
+/** The relay payload of a message this plugin relayed, when the message is one. */
+function relayPayload(message: UserMessage): Record<string, unknown> | undefined {
+  if (message.source.kind !== 'dsh-superagent' || message.source.form !== 'relay') return undefined
+  try {
+    const payload: unknown = JSON.parse(textOf(message.content))
+    return payload && typeof payload === 'object' ? payload as Record<string, unknown> : undefined
+  } catch { return undefined }
+}
+/** A ticket message the turn closed without the receipt the host owes: a ready result, or a still-open person question. */
+interface OwedReceipt { ticketId: string; questionId?: string }
+/** Reads the turn's relays that need a fallback receipt; addresses by ticket and question so the host can dedupe by receipt id. */
+export function owedReceipts(events: readonly SessionEvent[], turn: number): OwedReceipt[] {
+  let start = -1
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index]!
+    if (event.type === 'turn/start' && (event.data as { turn: number }).turn === turn) { start = index; break }
+  }
+  if (start < 0) return []
+  const owed: OwedReceipt[] = []
+  for (const event of events.slice(start)) {
+    if (event.type === 'turn/end') break
+    if (event.type !== 'user/message') continue
+    const payload = relayPayload(event.data as UserMessage)
+    if (!payload) continue
+    const ticket = payload.ticket as { ticket_id?: string } | undefined
+    const ticketId = ticket?.ticket_id
+    if (!ticketId) continue
+    if (payload.kind === 'worker_report' && payload.state === 'ready') owed.push({ ticketId })
+    if (payload.kind === 'worker_attention' && typeof payload.question_id === 'string') owed.push({ ticketId, questionId: payload.question_id })
+  }
+  return owed
 }
 
 /** Nudges a main-Session turn that would end with nothing the owner can see after a worker report or question reached it. */
@@ -100,7 +138,13 @@ export class TurnGuard {
   /** Steers the guard's one message into `agent`'s turn when that turn owes the owner a word and shows them nothing. */
   private check(agent: Agent, turn: number): void {
     if (agent.id !== this.host.masterId) return
-    const view = inspectTurn(agent.session.snapshotEvents(), turn)
+    const events = agent.session.snapshotEvents()
+    const owed = owedReceipts(events, turn)
+    if (owed.length && this.host.fallback) {
+      for (const item of owed) this.host.fallback(item.ticketId, item.questionId)
+      return
+    }
+    const view = inspectTurn(events, turn)
     if (!view.owed || view.addressed || view.nudged) return
     agent.steer(freezeMessage({ id: messageId(`turn-check:${turn}`), role: 'user',
       content: [{ type: 'text', text: TURN_CHECK_TEXT }], source: { kind: 'dsh-superagent', form: 'relay' } }))
