@@ -212,7 +212,7 @@ export class Tickets extends EnginePart {
    * followed the Thread follows it no more, so its close no longer ends the ticket. Each ticket keeps deciding the messages
    * it received from the Thread.
    */
-  dropSubscriptions(thread: string, by: 'person' | 'executor', ticketId?: string, reason?: string): boolean {
+  dropSubscriptions(thread: string, by: 'person' | 'executor' | 'ticket', ticketId?: string, reason?: string): boolean {
     const current = this.repo.threads.get(thread)
     const tickets = current?.subscriptions.filter(id => ticketId === undefined || id === ticketId) ?? []
     if (!current || !tickets.length) return false
@@ -359,6 +359,13 @@ export class Tickets extends EnginePart {
     for (const assignment of stopping) { assignment.state = 'ended'; assignment.endedAt = at }
     this.repo.tickets.save(ticket)
     this.letGo(ticketId, waiting, left)
+    // An on-demand Thread holds no standing Subscription: with the work done, its later messages reach the orchestrator again,
+    // which attaches the one that continues this ticket.
+    for (const thread of this.repo.threads.list()) {
+      if (thread.subscriptions.includes(ticketId) && this.options.routing?.(thread.ref.source) === 'on-demand') {
+        this.dropSubscriptions(thread.key, 'ticket', ticketId, 'the ticket ended')
+      }
+    }
     this.emit('ticket.ended', { ticketId, by, outcome, ...why })
     for (const assignment of stopping) this.options.executor.stop(ticket, assignment, reason ?? outcome)
   }

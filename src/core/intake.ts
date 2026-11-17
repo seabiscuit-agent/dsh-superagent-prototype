@@ -28,6 +28,9 @@ export class Intake extends EnginePart {
       return 'filtered'
     }
     this.repo.triggers.save(trigger)
+    // An on-demand Source holds every message for the orchestrator, which attaches the ones that belong to a ticket; a
+    // subscription on its threads therefore reaches nothing on its own.
+    const onDemand = this.options.routing?.(trigger.source) === 'on-demand'
     const keys = trigger.threads.map(threadKey)
     // Track reached tickets and whether they were reached only via context threads (a ticket's own thread makes `context` false).
     const reached = new Map<string, { ticket: Ticket; context: boolean }>()
@@ -35,7 +38,7 @@ export class Intake extends EnginePart {
       const thread = this.thread(ref)
       if (!thread.lastAt || trigger.at > thread.lastAt) thread.lastAt = trigger.at
       thread.correlated = [...new Set([...thread.correlated, ...keys.filter(other => other !== thread.key)])]
-      for (const ticketId of thread.subscriptions) {
+      for (const ticketId of onDemand ? [] : thread.subscriptions) {
         const ticket = this.repo.tickets.get(ticketId)
         // Only a person's message on a non-context thread resumes an ended ticket; bots and CI do not (the Executor re-reads
         // threads when it resumes), and a human-stopped ticket receives nothing because its Mandate was withdrawn.
