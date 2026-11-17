@@ -130,15 +130,25 @@ The system MUST 为每个任务行把「已处理的最后一个到期时刻」�
 ### Requirement: 触发走既有授权链
 
 The system SHALL 让 `schedule` 产生的 Trigger 与其它来源走同一条链：`SourceRegistry.scope()`
-判定是否听取、`src/policy.ts` 的 `machineGate()` 判定准入、评估与建单沿用既有流程。无发送者
-的 Trigger MUST 落在 `unlistedUnaddressed` 格，强度恒为 `inferred`；该格默认 `ignore`，用户必须
-在策略面板显式改成 `inferred` 才可能入域。
+判定是否听取、`src/policy.ts` 的 `machineGate()` 判定准入、评估与建单沿用既有流程。`scope()`
+MUST 对该来源的 Trigger 返回 `observed: true`（并带 `row = <job key>`），因为
+`machineGate()` 的第二道条件是「被 addressed 或来源接收全部消息」，而无发送者的 Trigger 永远
+不会被 addressed；`meta.job` 不在当前配置的启用行里时，`scope()` MUST 返回
+`observed: false`，使其不入域。无发送者的 Trigger MUST 落在 `unlistedUnaddressed` 格，强度恒
+为 `inferred`；该格默认 `ignore`，用户必须在策略面板显式改成 `inferred` 才可能入域。
 
 #### Scenario: 未配置准入时不入域
 
 - **GIVEN** `schedule` 的 admission 表保持默认（`unlistedUnaddressed = "ignore"`）
 - **WHEN** 到期 Trigger 进入 `machineGate()`
 - **THEN** 返回 `{admissible: false, reason: "admission_ignored"}`，不消耗模型调用
+
+#### Scenario: 任务行已被删除或停用后的迟到 Trigger
+
+- **GIVEN** 一条 Trigger 的 `meta.job` 在当前配置里已不存在，或该行 `enabled = false`
+- **WHEN** 该 Trigger 到达 intake 或之后的重新校验
+- **THEN** `scope()` 返回 `observed: false`（或 `{listened: false, reason: "source_disabled"}`），
+  该 Trigger 被 filtered 记录，不建工单、不被旧结论唤起
 
 #### Scenario: 打开准入后由评估决定是否建单
 

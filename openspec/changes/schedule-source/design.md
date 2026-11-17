@@ -146,10 +146,19 @@ while (!signal.aborted) {
 
 ### 6. 无发送者 Trigger + `unlistedUnaddressed` 格 + 每行一个 admission row
 
-`scope()` 返回 `{ listened: true, observed: false, row: <job key> }`。`policy.rows(config)` 为每个
-启用的任务行返回一行 `AdmissionRowView`（`id` = key，`label` = 行 title，`note` 说明 cron 与
-时区），`cells` 只允许 `unlistedUnaddressed`——因为本来源的 Trigger 永远无发送者，没有
-「listed」与「addressed」的语义。这与 `src/sources/github.ts` 的 `ci` 行完全一致。
+`scope()` 必须返回 `observed: true`：`machineGate` 的第二道条件是
+`if (!scope.listened || !(trigger.addressed || scope.observed)) return {admissible: false, reason: 'not_human'}`
+（`src/policy.ts:175`），而本来源的 Trigger 永远没有 `addressed`——所以 `observed` 是唯一能放行
+的条件。于是 `scope: ({meta}, config) => { const job = String(meta.job); return config.jobs.some(row =>
+row.key === job) ? {listened: true, observed: true, row: job} : {listened: true, observed: false} }`：
+配置里存在且启用的行才算「这个来源在这里接收全部消息」，未知 job 的 Trigger 一律不入域。
+这正是 `src/sources/github.ts:61` 对 CI 的做法——`observed: row !== undefined && config[OBSERVED[row]]`，
+即由配置里的开关决定 observed。
+
+`policy.rows(config)` 为每个启用的任务行返回一行 `AdmissionRowView`（`id` = key，`label` = 行
+title，`note` 说明 cron 与时区），`cells` 只允许 `unlistedUnaddressed`——因为本来源的 Trigger
+永远无发送者，没有「listed」与「addressed」的语义。这与 `src/sources/github.ts` 的 `ci` 行完全
+一致，包括 `src/policy.ts:183` 那一行 `const cell = 'unlistedUnaddressed' as const` 的固定取值。
 
 默认值仍是 `ADMISSION_DEFAULTS` 的 `unlistedUnaddressed: 'ignore'`：**装好不会自动开始建单**，
 用户必须显式打开。这是本变更最重要的安全默认。
