@@ -19,7 +19,7 @@
 `src/core/intake.ts` 会做 scope 判定、线程订阅、`addInput`、评估排队与事实落库。也就是说
 「按时间产生一条事件」所需的下游能力**已经齐全**，缺的只是上游那个产生者。
 
-授权侧（`src/policy.ts:172-190` `machineGate`）已经能处理无发送者的 Trigger：`actor.id`
+授权侧（`src/policy.ts:171-188` `machineGate`）已经能处理无发送者的 Trigger：`actor.id`
 为空时走 `const cell = 'unlistedUnaddressed' as const`，要求该格为 `inferred` 且
 `eval.mode !== 'off'`，结果 strength 恒为 `inferred`。GitHub CI 事件就是这个形状的先例
 （`src/sources/github.ts` 的 `ci` 行，注释「CI has no sender, so only the cell of a sender off
@@ -158,7 +158,7 @@ while (!signal.aborted) {
 
 `SourceKind.channel` 省略。后果是：定时触发建的工单，`src/core/replies.ts:117` 的
 `sourceChannel(ticket) = this.source(ticket)?.channel ?? ticket.channels[0]` 只能取
-`ticket.channels[0]`——而 `create()` 只收集 `trigger.channel` 存在的来源（`:45-49`），所以
+`ticket.channels[0]`——而 `create()` 只收集 `trigger.channel` 存在的来源（`:47-50`），所以
 `channels` 为空，工单需要回复时会抛 `UserError('noChannel')`。
 
 这是**故意**的：定时任务没有天然的回话对象，凭空编一个（主会话？最后一封飞书？）会制造

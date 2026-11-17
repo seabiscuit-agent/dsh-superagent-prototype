@@ -7,7 +7,7 @@
 - 宿主唯一的时钟是 Passes 的 2 秒节拍 `setInterval(() => this.request(), 2000)`
   （`src/app/passes.ts:28`），`pumpOnce()` 只做 `effects.kick()` 与 `engine.evaluateDue()`
   （`:63-68`）；`evaluateDue()` 只处理已到期 Eval、有未投递 Input 的工单、待评估 thread
-  （`src/core/engine.ts:75-85`）——没有「到点产生一条新事件」的状态。
+  （`src/core/engine.ts:85-95`）——没有「到点产生一条新事件」的状态。
 - `ticket-agenda` 只做**工单内**一次性 `at` 唤醒：签名 `orchestrator_schedule(ticket_id, key, at, reason)`
   要求 `ticket_id`，到点身份是「这张工单的一条 `agenda` Input」。它自己的 proposal 明确
   「不做内置 `schedule` Source（cron 行）」，design 的 Open Questions 把「cron 复用 agenda 还是

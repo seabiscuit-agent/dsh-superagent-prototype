@@ -3,7 +3,7 @@
 宿主没有「按墙钟重复产生事件」的来源。唯一的时钟是 Passes 每 2 秒的 `setInterval`
 （`src/app/passes.ts:28`），`pumpOnce()` 只做 `effects.kick()` 和 `engine.evaluateDue()`
 （`:63-68`）；`evaluateDue()` 只处理已到期的 Eval、有未投递 Input 的工单和待评估的
-thread（`src/core/engine.ts:75-85`），没有任何「到点产生一条新事件」的状态。
+thread（`src/core/engine.ts:85-95`），没有任何「到点产生一条新事件」的状态。
 
 `ticket-agenda` 补上了工单内一次性 `at` 唤醒，但它的前提是一张**已存在**的活工单：
 `orchestrator_schedule(ticket_id, key, at, reason)`，到点身份是「这张工单的一条 `agenda`
