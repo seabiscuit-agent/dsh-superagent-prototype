@@ -2,7 +2,7 @@
 import { UserError } from './errors.ts'
 import { followupOwners, reached, threadKey } from './model.ts'
 import type { Thread, ThreadRef, Ticket, Trigger } from './model.ts'
-import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, Outbox, Policy, Repositories, SourceScope } from './ports.ts'
+import type { Assessor, AssessmentOutcome, DomainEvent, DomainEvents, Executor, FactData, FactType, Outbox, Policy, Repositories, SourceScope } from './ports.ts'
 
 export interface EngineOptions {
   repo: Repositories
@@ -66,8 +66,17 @@ export abstract class EnginePart {
     this.repo.threads.save(primary)
     return true
   }
-  protected emit<K extends keyof DomainEvents>(type: K, data: DomainEvents[K]): void {
-    this.options.emit?.({ type, at: this.now(), data } as DomainEvent)
+  protected emit<K extends keyof DomainEvents>(type: K, data: DomainEvents[K], at: string = this.now()): void {
+    this.options.emit?.({ type, at, data } as DomainEvent)
+  }
+  /** Appends one Fact in the transaction of the write it describes; `ticket` is null for a moment no Ticket owns. */
+  protected fact(type: FactType, data: FactData, at: string | null, ticket: string | null = null): void {
+    this.repo.facts.append({ ticket, at, type, data, origin: 'recorded' })
+  }
+  /** Records a moment both ways, at the same time: the Fact the timeline keeps and the Domain event the host announces. */
+  protected remember<K extends keyof DomainEvents>(type: K, data: DomainEvents[K], at: string, ticket: string | null = null): void {
+    this.fact(type, data, at, ticket)
+    this.emit(type, data, at)
   }
   protected require(ticketId: string): Ticket { const ticket = this.repo.tickets.get(ticketId); if (!ticket) throw new UserError('unknownTicket'); return ticket }
   /** Returns the stored Thread or an unsaved empty Thread aggregate. */

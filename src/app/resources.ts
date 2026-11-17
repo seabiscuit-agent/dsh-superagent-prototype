@@ -10,6 +10,7 @@ import { feishuTriggerId } from '../sources/feishu-trigger.ts'
 import { ASSIGNMENTS, INPUTS, assignmentLine, decisionCard, decisionDetails, inputLine, newestPage, preview, textPage, threadCard, ticketCard,
   ticketDetails, triggerCard, type TicketThread } from './cards.ts'
 import { threadTitle } from './views/records.ts'
+import { ticketTimeline } from './views/timeline.ts'
 import { transcriptEntry } from './context.ts'
 import { builtInParts, defaultPrompts } from './prompts.ts'
 import type { Context } from '@deepseek-ai/cordis'
@@ -34,6 +35,8 @@ export const RESOURCES: readonly { name: string; holds: string; executor?: true 
   { name: 'ticket/<id>/assignment', holds: 'its assignment text', executor: true },
   { name: 'ticket/<id>/assignments', holds: 'its assignments, newest first, with the start of each report', executor: true },
   { name: 'ticket/<id>/inputs', holds: 'its inputs, newest first', executor: true },
+  { name: 'ticket/<id>/timeline', holds: 'its timeline, oldest first: one line per Fact with its time (`null` when the record never '
+    + 'carried one), type, summary, and whether the Engine recorded it or a backfill derived it', executor: true },
   { name: 'ticket/<id>/result', holds: 'its latest report', executor: true },
   { name: 'ticket/<id>/report/<id>', holds: 'the report of one of its assignments', executor: true },
   { name: 'ticket/<id>/transcript', holds: 'its Executor Session\'s messages, newest first', executor: true },
@@ -58,7 +61,7 @@ export const resourceGrammar = (executor: boolean): string => RESOURCES.filter(r
   .map(resource => `${resource.name}: ${resource.holds}`).join('; ')
 
 export interface ResourceHost {
-  readonly store: Pick<Store, 'get' | 'settings' | 'triggers' | 'tickets' | 'threads' | 'read' | 'decisions' | 'replyStatus'>
+  readonly store: Pick<Store, 'get' | 'settings' | 'triggers' | 'tickets' | 'threads' | 'read' | 'decisions' | 'replyStatus' | 'facts'>
   readonly pages: TextCache
   readonly prompts: Pick<Prompts, 'current' | 'version' | 'history' | 'skills' | 'defaultChanged'>
   readonly commands: Commands
@@ -244,7 +247,8 @@ const ROUTES: readonly Route[] = [
     if (!id || more.length) throw new Error('Unknown context resource')
     if (ticketId && ticketId !== id) throw new Error('Ticket does not belong to this worker')
     const ticket = host.store.tickets.get(id)
-    if (!ticket) throw new UserError('unknownTicket')
+    // The timeline names an unknown Ticket the way the HTTP route and `why` do, so all three readers agree on the wording.
+    if (!ticket) throw section === 'timeline' ? new Error('Ticket not found') : new UserError('unknownTicket')
     if (section === undefined) {
       const assignment = runningAssignment(ticket)
       const running = assignment && assignmentSessionId(ticket.id, assignment)
@@ -265,6 +269,11 @@ const ROUTES: readonly Route[] = [
         ? newestPage(ticket.assignments, read.offset, size, item => assignmentLine(ticket, item), resource)
         : newestPage(ticket.inputs, read.offset, size, input => inputLine(ticket, input, !!ticketId), resource)
       return { items, next_offset: next_offset ?? null }
+    }
+    if (section === 'timeline') {
+      if (part !== undefined) throw new Error('Unknown context resource')
+      // The same rows the HTTP route and `why --json` return, one JSON object per line so a page can be read on its own.
+      return text(read, ticketTimeline(host, id).facts.map(fact => JSON.stringify(fact)).join('\n'))
     }
     let body: string
     if (section === 'input' && part) {

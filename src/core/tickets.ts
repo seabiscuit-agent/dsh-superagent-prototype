@@ -54,7 +54,12 @@ export class Tickets extends EnginePart {
     for (const triggerId of triggerIds) for (const ref of this.repo.triggers.get(triggerId)?.threads ?? []) this.subscribe(id, ref)
     if (outcome.acknowledgement && primary) this.replies.acknowledgeAccepted(id, primary, outcome.acknowledgement)
     this.options.executor.start(this.require(id), assignment)
-    this.emit('ticket.created', { ticketId: id, decisionId, strength: mandate.strength })
+    // The Triggers that opened the Ticket happened before it existed, so their own moment is kept on its chain here.
+    for (const triggerId of triggerIds) {
+      const trigger = this.repo.triggers.get(triggerId)
+      if (trigger) this.fact('trigger.received', { triggerId, threads: trigger.threads.map(threadKey) }, trigger.at, id)
+    }
+    this.remember('ticket.created', { ticketId: id, decisionId, strength: mandate.strength }, at, id)
   }
   /**
    * Subscribes an open ticket to `thread` and records it in `ticket.follows` (`own` when opened by the ticket).
@@ -226,7 +231,8 @@ export class Tickets extends EnginePart {
       const follows = before.filter(item => item.thread !== thread)
       this.repo.tickets.save(follows.length ? { ...rest, follows } : rest)
     }
-    for (const id of tickets) this.emit('thread.unsubscribed', { threadKey: current.key, ticketId: id, by, ...(reason ? { reason } : {}) })
+    const at = this.now()
+    for (const id of tickets) this.remember('thread.unsubscribed', { threadKey: current.key, ticketId: id, by, ...(reason ? { reason } : {}) }, at, id)
     return true
   }
   /**
@@ -268,7 +274,7 @@ export class Tickets extends EnginePart {
     ticket.inputs.push(resumed); ticket.undelivered.unshift(resumed.id)
     this.repo.tickets.save(ticket)
     this.options.executor.start(ticket, assignment)
-    this.emit('ticket.resumed', { ticketId, triggerId: first.triggerId })
+    this.remember('ticket.resumed', { ticketId, triggerId: first.triggerId }, at, ticketId)
   }
   /** The Triggers of a ticket's trigger Inputs, or of those of them whose Input ids are `ids`. */
   private triggersOf(ticket: Ticket, ids?: readonly string[]): Trigger[] {
@@ -359,6 +365,7 @@ export class Tickets extends EnginePart {
     for (const question of ticket.questions ?? []) {
       if (question.resolution !== undefined) continue
       question.resolution = 'withdrawn'; question.resolvedAt = ticket.updatedAt
+      this.fact('question.withdrawn', { ticketId, questionId: question.id, by: 'ticket' }, ticket.updatedAt, ticketId)
       if (question.to === 'person') this.replies.withdrawAttention(question.id)
     }
     delete ticket.delivery
@@ -373,7 +380,7 @@ export class Tickets extends EnginePart {
         this.dropSubscriptions(thread.key, 'ticket', ticketId, 'the ticket ended')
       }
     }
-    this.emit('ticket.ended', { ticketId, by, outcome, ...why })
+    this.remember('ticket.ended', { ticketId, by, outcome, ...why }, at, ticketId)
     for (const assignment of stopping) this.options.executor.stop(ticket, assignment, reason ?? outcome)
   }
   /**
@@ -404,8 +411,9 @@ export class Tickets extends EnginePart {
     return assignment
   }
   private endAssignment(ticket: Ticket, assignment: Assignment, reason: string): void {
-    assignment.state = 'ended'; assignment.endedAt = this.now(); assignment.endedReason = reason
-    this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
+    const at = this.now()
+    assignment.state = 'ended'; assignment.endedAt = at; assignment.endedReason = reason
+    this.remember('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason }, at, ticket.id)
   }
   /**
    * Give an open ticket's Executor a fact as a note Input, such as what another ticket found; it grants nothing (see `TicketInput`).
@@ -435,7 +443,7 @@ export class Tickets extends EnginePart {
   /** Subscribe a ticket to a Thread; later Triggers on it reach the ticket as Inputs, as the ticket's own once it was for context. */
   private subscribe(ticketId: string, ref: ThreadRef): void {
     const thread = this.thread(ref)
-    if (!thread.subscriptions.includes(ticketId)) { thread.subscriptions.push(ticketId); this.emit('thread.subscribed', { threadKey: thread.key, ticketId }) }
+    if (!thread.subscriptions.includes(ticketId)) { thread.subscriptions.push(ticketId); this.remember('thread.subscribed', { threadKey: thread.key, ticketId }, this.now(), ticketId) }
     if (thread.context?.includes(ticketId)) thread.context = thread.context.filter(id => id !== ticketId)
     this.repo.threads.save(thread)
   }

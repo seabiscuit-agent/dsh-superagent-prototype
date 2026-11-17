@@ -61,7 +61,9 @@ export class Intake extends EnginePart {
     // A host-dispatched trigger skips assessment: `dispatch` accepts it mechanically, `discussion` is never a ticket.
     if (options.assess !== false && !this.owners(trigger).length) this.queueForEval(trigger)
     for (const ticketId of fanout) this.tickets.wake(ticketId)
-    this.emit('trigger.received', { triggerId: trigger.id, threads: trigger.threads.map(threadKey) })
+    // Each Ticket the Trigger reached keeps the moment on its own chain; the event below announces it once.
+    for (const ticketId of fanout) this.fact('trigger.received', { triggerId: trigger.id, threads: trigger.threads.map(threadKey) }, at, ticketId)
+    this.emit('trigger.received', { triggerId: trigger.id, threads: trigger.threads.map(threadKey) }, at)
     return 'stored'
   }
 }

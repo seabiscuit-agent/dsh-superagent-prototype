@@ -27,6 +27,7 @@ import { overview } from './views/overview.ts'
 import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
+import { backfillTimeline, ticketTimeline } from './views/timeline.ts'
 import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
 
 export interface HttpHost {
@@ -122,6 +123,17 @@ function ticketPage(runtime: HttpHost, id: string) {
   return { ...detail, agenda: runtime.effects.agendaRows(ticket.id), environment: runtime.configured() ? runtime.ticketEnvironment(ticket) : [] }
 }
 export type TicketPageView = ReturnType<typeof ticketPage>
+/** A ticket's timeline; a missing ticket is the same 404 as its page, so every reader names one error. */
+function ticketTimelinePage(runtime: HttpHost, id: string) {
+  if (!runtime.store.tickets.get(id)) throw new RouteError(404, 'Ticket not found')
+  return ticketTimeline(views(runtime), id)
+}
+/** The backfill of a ticket's timeline; it answers with the chain it now reads, and refuses an unknown ticket the same way. */
+function ticketTimelineBackfill(runtime: HttpHost, id: string) {
+  if (!runtime.store.tickets.get(id)) throw new RouteError(404, 'Ticket not found')
+  return backfillTimeline({ store: runtime.store }, id)
+}
+export type TicketTimelineView = ReturnType<typeof ticketTimelinePage>
 function promptsView(runtime: HttpHost, revision: number | undefined, offset: number) {
   const current = runtime.prompts.current()
   const shown = revision === undefined || revision === current.revision ? current : runtime.prompts.version(revision)
@@ -193,6 +205,8 @@ function routes(runtime: HttpHost): Routes {
       return ticketList(views(runtime), state, offset, limit)
     },
     'GET tickets/:id': ({ params }) => ticketPage(runtime, params.id),
+    'GET tickets/:id/timeline': ({ params }) => ticketTimelinePage(runtime, params.id),
+    'POST tickets/:id/timeline/backfill': ({ params }) => ticketTimelineBackfill(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
