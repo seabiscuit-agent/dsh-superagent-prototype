@@ -43,6 +43,16 @@
 
 ## 坑 / 需确认点
 
+- **`scope()` 必须返回 `observed: true`**：`machineGate` 的第二道条件是
+  `if (!scope.listened || !(trigger.addressed || scope.observed)) return {admissible: false, reason: 'not_human'}`
+  （`src/policy.ts:175`）。无发送者的 Trigger 永远没有 `addressed`，所以 `observed` 是唯一放行
+  条件；写成 `observed: false` 会让每条 Trigger 以 `not_human` 被过滤，来源装好即死。先例是
+  `src/sources/github.ts:61` 的 CI——`observed: row !== undefined && config[OBSERVED[row]]`。
+- **「每行下次触发时刻」在现有面板里没有渲染通道**：`FieldSpec` 的 `rows` 列只支持 `text` /
+  `select`（`src/sources/kind.ts:22`），`SourceKind.facts` 只接收 `deployment`（`:91`），
+  `settingsView` 也只传 `kind?.facts?.(setup.deployment)`（`src/app/views/settings.ts:36`）；
+  来源列表只渲染 `error` / `paused` 的健康条目（`src/client/source.tsx:103`）。要显示它得先给
+  面板加「配置派生只读值」的能力，别在提案里假装已有。
 - `tests/bundle-patch.spec.ts:33-35` 硬断言 `cordis.patch.yml` 顶层 insert 的 id 顺序，新增插件行
   必须同步改这条断言。
 - `SourcePolicyPart.schema` 每个字段必须有 default，否则 `registry.policyPart()` 在 `safeParse`

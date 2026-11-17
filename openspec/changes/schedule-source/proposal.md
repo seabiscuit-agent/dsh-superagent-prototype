@@ -38,8 +38,10 @@ Trigger 不直接派工、只补最近一次错过。本变更就是它的提案
   **只补最近一次**错过的到期时刻，不 replay 全部。
 - 到点**只产生 Trigger**：不建单、不派工、不调用模型；是否建单由现有 Policy、admission
   表与评估模式决定。
-- 在 Source 面板暴露任务行编辑器、每行「下次触发时刻」，并新增 `schedule` 健康项，
-  用于表达「某行 cron / 时区非法，该行不触发」与「下一次触发时刻」。
+- 新增 `schedule` 健康项，在任务行 cron / 时区非法时点名该行（来源列表只渲染 `error` 与
+  `paused` 的条目，这是现有面板唯一可见的健康通道）；不承诺在配置行编辑器里显示「每行下次
+  触发时刻」——`FieldSpec` 的 `rows` 列只支持 text/select，`facts()` 拿不到配置，面板没有渲染
+  配置派生只读值的通道，展示它需要新能力，留给后续变更。
 
 ## Capabilities
 
@@ -88,10 +90,10 @@ Trigger 不直接派工、只补最近一次错过。本变更就是它的提案
    - `enabled=false`、来源关闭、`policy.paused` 三种情况下都不产生 Trigger。
 5. **实施：回归**（未来）：`env -u GIT_CONFIG_GLOBAL pnpm check` 通过；
    `tests/sources.spec.ts`、`tests/registry.spec.ts`、`tests/bundle-patch.spec.ts` 同步更新后通过。
-6. **实施：生产实测**（未来）：在 superagent `:3082` 配一行 `*/1 * * * *` 任务，观察面板
-   「下次触发」随时间前进、`schedule:<key>` 线程出现 Trigger；把该任务行的 admission 格设为
-   `inferred` 且 eval mode 为 `auto` 时产生工单，设为 `ignore` 时只留一条 filtered 记录、
-   不建单。
+6. **实施：生产实测**（未来）：在 superagent `:3082` 配一行 `*/1 * * * *` 任务，观察
+   `schedule:<key>` 线程随时间出现 Trigger（`at` 与 `meta.due` 对齐到期时刻）；把该任务行的
+   admission 格设为 `inferred` 且 eval mode 为 `auto` 时产生工单，设为 `ignore` 时只留一条
+   filtered 记录、不建单；把该行 cron 改坏，来源列表的 `schedule` 健康项变 `error` 并点名该行。
 
 ## Impact
 

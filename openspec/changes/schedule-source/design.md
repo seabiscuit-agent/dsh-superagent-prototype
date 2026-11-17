@@ -187,6 +187,14 @@ title，`note` 说明 cron 与时区），`cells` 只允许 `unlistedUnaddressed
 
 - **默认 `ignore` 让「装好却什么都不发生」** → 面板要在该行旁明确写「该行需要在策略里打开准入
   才会建单」，验收标准 6 正面测这一条。
+- **「下次触发时刻」在现有面板里没有渲染通道** → `FieldSpec` 的 `rows` 列只有 `text` 与
+  `select`（`src/sources/kind.ts:22`），`SourceKind.facts` 只接收 `deployment` 拿不到配置
+  （`src/sources/kind.ts:91`），设置视图也是 `facts: kind?.facts?.(setup.deployment) ?? {}`
+  （`src/app/views/settings.ts:36`）；来源列表又只渲染 `error` / `paused` 的健康条目
+  （`src/client/source.tsx:103`）。因此本变更只承诺两件事：非法行让 `schedule` 健康项变
+  `error` 并在 detail 里点名，以及 `schedule:<key>` 线程里能看到每次触发的时刻与文本。把
+  「每行下次触发时刻」放进面板需要给面板新增「配置派生只读值」的能力，是独立的一次改动，
+  不在本变更里假装已有。
 - **定时工单没有回执通道**（决策 7）→ 写进 design 与 notes；短期用 `ticket.channels[0]` 缺失时
   的 `noChannel` 报错暴露问题，而不是静默丢消息。后续变更再补 `report_to`。
 - **自实现 cron 的边界错误**（日/周并集、DST、月末）→ 纯函数 + 表驱动单测覆盖这些具体日子；

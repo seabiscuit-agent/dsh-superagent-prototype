@@ -18,7 +18,8 @@ The system SHALL 提供内置 Source kind `schedule`，其配置是一组任务�
 
 - **GIVEN** `schedule` Source 已安装但没有任何任务行
 - **WHEN** 用户保存一行 `{key: "ci-sweep", cron: "*/1 * * * *", timezone: "Asia/Shanghai", title: "CI 巡检", text: "看一次 CI 队列", enabled: true}`
-- **THEN** 配置通过校验并被持久化，面板里出现这一行以及它的下次触发时刻
+- **THEN** 配置通过校验并被持久化，面板里出现这一行；下次触发时刻不在行编辑器里显示（见
+  「触发与状态可观察」），以来源线程的实际触发为证
 
 #### Scenario: key 重复或格式非法时整份配置被拒
 
@@ -165,20 +166,29 @@ MUST 对该来源的 Trigger 返回 `observed: true`（并带 `row = <job key>`�
 - **THEN** 不产生 Trigger；前者由 `scope()` 返回 `{listened: false, reason: "source_disabled"}`，
   后者该行根本不进入 watch 循环
 
-### Requirement: 触发与下次时刻可观察
+### Requirement: 触发与状态可观察
 
-The system SHALL 让用户能看出定时源在做什么：面板里每个任务行显示它的下次触发时刻（或该行
-非法的原因），`schedule` 健康项在正常时报告「下一次触发时刻 / 已启用行数」，在异常时报告具体行
-与错误；`schedule:<key>` 线程在面板里可读，且历史触发以来源线程的消息形式可见。
+The system SHALL 让用户能看出定时源在做什么，且只承诺现有面板真正能渲染的两条通道：
 
-#### Scenario: 面板显示下次触发
+1. `schedule` 健康项：异常时（某行 cron/时区非法）状态为 `error`，detail MUST 含该行 `key` 与
+   错误原因——来源列表只渲染 `error` 与 `paused` 的条目（`src/client/source.tsx:103`），所以这是
+   唯一在面板可见的健康通道；正常时的 `ready` detail MUST 写出已启用行数与下一次触发时刻，
+   供日志与后续面板扩展读取，但不作为本变更的可见性承诺。
+2. `schedule:<key>` 线程：每次触发的 `at`、`meta.due` 与任务文本随既有来源线程与时间线可读。
 
-- **GIVEN** 一行每分钟任务已启用
-- **WHEN** 用户打开 `schedule` 的 Source 卡片
-- **THEN** 该行显示下次触发时刻（UTC 或本地时间的明确标注），且随时间前进；浏览器刷新后仍在
+本变更 MUST NOT 承诺「在配置行编辑器里显示每行下次触发时刻」：`FieldSpec` 的 `rows` 列只支持
+`text` 与 `select`（`src/sources/kind.ts:22`），`SourceKind.facts` 只接收 `deployment` 而拿不到
+配置（`src/sources/kind.ts:91`、`src/app/views/settings.ts:36`），现有面板没有渲染配置派生只读
+值的通道。展示每行下次触发时刻需要给面板新增能力，留给后续变更。
 
 #### Scenario: 非法行在健康项里点名
 
 - **GIVEN** 三行任务，其中一行的 `cron` 非法
-- **WHEN** 用户查看 Source 卡片
-- **THEN** 健康项状态为 `error`，detail 含该行 `key` 与错误原因；另外两行仍显示各自的下次触发时刻
+- **WHEN** 用户查看来源列表
+- **THEN** `schedule` 健康项状态为 `error`，detail 含该行 `key` 与错误原因；另外两行照常触发
+
+#### Scenario: 触发在来源线程上可见
+
+- **GIVEN** 一行任务已经触发过若干次
+- **WHEN** 用户打开 `schedule:<key>` 线程或该线程上的工单时间线
+- **THEN** 能看到每次触发的时刻（`at` = 到期时刻）与任务文本，不需要额外视图
