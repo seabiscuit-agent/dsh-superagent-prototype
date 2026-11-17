@@ -10,6 +10,7 @@ import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, buil
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
 import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
   ThreadRow, TicketPageView,
+  TicketTimelineView,
   TicketRow, TicketStage,
   TriggerRow } from '../../src/client/api.ts'
 import { SETUP_FIELDS } from '../../src/deployment.ts'
@@ -90,6 +91,8 @@ export interface PanelServer {
   settings: Settings; revisions: Record<string, number>
   prompts: PromptsView
   tickets: { open: TicketRow[]; ended: TicketRow[] }; ticketDetails: Record<string, TicketPageView>
+  /** Timelines by ticket id; a ticket absent here has an empty one, as a fresh ticket does. */
+  timelines: Record<string, TicketTimelineView>
   threads: ThreadRow[]
   threadPages: (key: string, query: { before?: string; around?: string }) => ThreadPageView | undefined
   person: TicketRow[]; search: Pick<ApiResponse<'GET search'>, 'items' | 'threads'>; history: HistoryView
@@ -258,6 +261,10 @@ function initial(): PanelServer {
       defaults: defaultPrompts(), parts: Object.entries(builtInParts()).map(([key, part]) => ({ key, ...part, base: builtInBase(part.text) })),
       defaultChanged: [], revisions: [{ ...defaults, changed: [] }], sessions: [], notificationPending: false, next_offset: null },
     tickets: { open: [ticketSummary()], ended: [ended] }, ticketDetails: { t1: ticketDetail() },
+    timelines: { t1: { ticket_id: 't1', truncated: false, facts: [
+      { at: '2026-09-22T00:00:00Z', type: 'ticket.created', summary: 'ticket created from decision d1', origin: 'recorded' },
+      { at: '2026-09-22T00:01:00Z', type: 'assignment.started', summary: 'assignment a1 started', origin: 'recorded' },
+    ] } },
     threads: [threadSummary()], threadPages: threadPage,
     person: [ticketSummary({ questions: [{ id: 'q1', from: 'worker', to: 'person', blocking: true, question: '需要确认按钮颜色',
       createdAt: '2026-09-23T00:00:00Z' }], note: { text: '需要确认按钮颜色', error: false }, reply },
@@ -329,6 +336,10 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET tickets': { query: ['state', 'offset', 'limit'], answer: ({ query }) => page(server.tickets[query.state === 'ended' ? 'ended'
     : 'open']) },
   'GET tickets/:id': { answer: ({ params }) => server.ticketDetails[params.id] ?? refuse(404, 'Ticket not found') },
+  'GET tickets/:id/timeline': { answer: ({ params }) => server.timelines[params.id] ?? (server.ticketDetails[params.id]
+    ? { ticket_id: params.id, facts: [], truncated: false } : refuse(404, 'Ticket not found')) },
+  'POST tickets/:id/timeline/backfill': { answer: ({ params }) => server.timelines[params.id] ?? (server.ticketDetails[params.id]
+    ? { ticket_id: params.id, facts: [], truncated: false } : refuse(404, 'Ticket not found')) },
   'POST tickets/:id/retry': { answer: ({ params }) => {
     const ticket = ticketOf(params.id)
     if (!ticket) return refuse(404, 'Ticket not found')

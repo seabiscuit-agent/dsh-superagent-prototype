@@ -232,3 +232,55 @@ it('does not signal a process that took the recorded service PID, and keeps a st
   expect(await run('stop', '--stop-timeout', '1')).toMatchObject({ code: 1, stderr: expect.stringContaining('Graceful stop timed out') })
   expect(existsSync(join(control('superagent'), 'manually-stopped'))).toBe(true)
 }, 20_000)
+/** A mock management API that answers `state` and one Ticket's timeline, recording the timeline requests it served. */
+async function serving(timelineValue: unknown, code = 200): Promise<{ url: string; asked: string[] }> {
+  const asked: string[] = []
+  server = createServer((request, response) => {
+    const url = request.url ?? ''
+    asked.push(`${request.method} ${url}`)
+    if (url.endsWith('/timeline') || url.endsWith('/timeline/backfill')) {
+      response.writeHead(code, { 'content-type': 'application/json' })
+        .end(JSON.stringify(code === 200 ? timelineValue : { error: 'Ticket not found' }))
+      return
+    }
+    response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(READY))
+  })
+  await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve))
+  return { url: `http://127.0.0.1:${(server!.address() as AddressInfo).port}`, asked }
+}
+const TIMELINE = { ticket_id: 't1', truncated: false, facts: [
+  { at: '2026-09-22T00:00:00Z', type: 'ticket.created', summary: 'ticket created from decision d1', origin: 'recorded' },
+  { at: null, type: 'report.recorded', summary: 'report ready: done', origin: 'derived' },
+] }
+it('prints a ticket timeline oldest first, and the same array as JSON', async () => {
+  const { url } = await serving(TIMELINE)
+  const shown = await run('why', 't1', '--url', url)
+  expect(shown).toMatchObject({ code: 0 })
+  expect(shown.stdout.split('\n').filter(Boolean)).toEqual(['2026-09-22T00:00:00Z  ticket.created  ticket created from decision d1',
+    'no time  report.recorded  report ready: done  [derived]'])
+  const json = await run('why', 't1', '--json', '--url', url)
+  expect(json).toMatchObject({ code: 0 })
+  expect(JSON.parse(json.stdout)).toEqual(TIMELINE.facts)
+}, 20_000)
+it('exits 4 for an unknown ticket without recording a fact, 1 when unreachable, and 3 while setup waits', async () => {
+  const unknown = await serving({ error: 'Ticket not found' }, 404)
+  expect(await run('why', 'nope', '--url', unknown.url))
+    .toMatchObject({ code: 4, stderr: expect.stringContaining('No ticket has the id nope') })
+  // `why` checks the service answers first, so the timeline request is the one that names the Ticket.
+  expect(unknown.asked).toContain('GET /orchestrator/api/tickets/nope/timeline')
+  expect(await run('why', 't1', '--url', 'http://127.0.0.1:9'))
+    .toMatchObject({ code: 1, stderr: expect.stringContaining('does not answer') })
+  // A service that answers but has not finished setup cannot read a timeline yet.
+  const waiting: Server = createServer((_request, response) => response.writeHead(200, { 'content-type': 'application/json' })
+    .end(JSON.stringify({ ...READY, setup: { problem: { code: 'missingRepository', detail: 'pick a repository' }, feishuProblem: null } })))
+  await new Promise<void>(resolve => waiting.listen(0, '127.0.0.1', resolve))
+  try {
+    expect(await run('why', 't1', '--url', `http://127.0.0.1:${(waiting.address() as AddressInfo).port}`))
+      .toMatchObject({ code: 3, stderr: expect.stringContaining('waiting for setup') })
+  } finally { await new Promise<void>(resolve => { waiting.close(() => { resolve() }) }) }
+}, 20_000)
+it('backfills a ticket timeline on request, writing each derived fact once', async () => {
+  const { url, asked } = await serving(TIMELINE)
+  expect(await run('why', 't1', '--backfill', '--url', url)).toMatchObject({ code: 0 })
+  expect(asked).toContain('POST /orchestrator/api/tickets/t1/timeline/backfill')
+}, 20_000)
