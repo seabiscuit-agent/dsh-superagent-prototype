@@ -151,8 +151,9 @@ while (!signal.aborted) {
 `if (!scope.listened || !(trigger.addressed || scope.observed)) return {admissible: false, reason: 'not_human'}`
 （`src/policy.ts:175`），而本来源的 Trigger 永远没有 `addressed`——所以 `observed` 是唯一能放行
 的条件。于是 `scope: ({meta}, config) => { const job = String(meta.job); return config.jobs.some(row =>
-row.key === job) ? {listened: true, observed: true, row: job} : {listened: true, observed: false} }`：
-配置里存在且启用的行才算「这个来源在这里接收全部消息」，未知 job 的 Trigger 一律不入域。
+row.key === job && row.enabled === 'true') ? {listened: true, observed: true, row: job} : {listened: true, observed: false} }`：
+配置里存在且启用的行才算「这个来源在这里接收全部消息」，未知 job 或已停用行的迟到 Trigger
+一律不入域（`enabled` 是字符串，理由见 tasks 2.1）。
 这正是 `src/sources/github.ts:61` 对 CI 的做法——`observed: row !== undefined && config[OBSERVED[row]]`，
 即由配置里的开关决定 observed。
 
