@@ -28,6 +28,9 @@ import { MasterAssessor } from './assessment.ts'
 import { KV } from '../kv.ts'
 import { Store } from './store.ts'
 import { evalsHealth } from './views/overview.ts'
+import { executorLoad } from './views/tickets.ts'
+import { RestartQueue } from './restart-queue.ts'
+import { restartViaPanel } from './restart-panel.ts'
 import { TextCache } from './cache.ts'
 import { Effects } from './effects.ts'
 import { Prompts } from './prompts.ts'
@@ -86,6 +89,8 @@ export class Runtime extends Service implements SourceHost {
   private stopping?: Promise<void>
   private readonly sourceDeps: SourceContextDeps
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
+  /** The main Session's delayed restart; a restart waits while workers run or wait for a slot. */
+  private restartQueue?: RestartQueue
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
   constructor(ctx: Context, readonly machine: Machine, restart: () => void) {
@@ -169,7 +174,18 @@ export class Runtime extends Service implements SourceHost {
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
         get deployment() { return setup.deployment }, configured: () => setup.configured(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
-      this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources,
+      const restartQueue = this.restartQueue = new RestartQueue({
+        load: () => executorLoad(store, this.executor.activeCount()),
+        apply: async () => { await restartViaPanel({ port: ctx.webServer.port }) },
+        schedule: (run, ms) => {
+          const timer = setTimeout(run, ms)
+          timer.unref()
+          return () => clearTimeout(timer)
+        },
+        now: () => Date.now(),
+        log: message => ctx.logger.warn('dsh-superagent %s', message),
+      })
+      this.toolHost = { context: ctx, engine, store, prompts, sessions, settings: this.settings, assessor, resources, restart: restartQueue,
         get github() { return runtime.context({ kind: 'github', health: ['github'] }) },
         requestPass: () => { passes.request() }, sendReplies: () => outbox.sent(),
         quietly: run => { this.quiet++; try { return run() } finally { this.quiet-- } } }
@@ -307,6 +323,8 @@ export class Runtime extends Service implements SourceHost {
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }
   private async shutdown(): Promise<void> {
     this.closingFlag = true; const passes = this.passes.stop(); this.stopped.abort()
+    // The DSH process is stopping: a restart that still waits for workers is no longer meaningful.
+    this.restartQueue?.dispose()
     try {
       this.assessor.stop()
       const ids = [this.masterId, ...new Set(this.store.tickets.list()

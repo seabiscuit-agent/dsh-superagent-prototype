@@ -34,6 +34,8 @@ Startup registers management routes and runs Setup. After setup resolves, it ins
 
 Shutdown cancels turns, waits for passes, effects and agents, restores the process environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
 
+Restarting the instance is the main Session's alone: `orchestrator_restart` asks `src/app/restart-queue.ts`, which defers while any worker runs or any ticket waits for a slot, and `src/app/restart-guard.ts` refuses the shell commands that would bypass that queue from a worker Session.
+
 | Part | Module | Does |
 | --- | --- | --- |
 | Setup | `src/app/setup.ts` | Resolves the repository and the accounts by probing their CLIs the way worker shells run them, writes and applies the workers' environment and command shims, and keeps the setup problems; Settings checks a changed account through it, and restarts through it, which runs setup again |
@@ -317,6 +319,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/core/index.ts` | The core's exports |
 | `src/app/runtime.ts` | The Runtime, the composition root, with its start and stop |
 | `src/app/restart-recovery.ts` | Which main-Session turn a restart cut off: `cutTurn` reads the Session events and the turn `Runtime.shutdown` recorded, `markShutdownTurn` writes that marker, and `recoveryNote` is the message that resumes the turn |
+| `src/app/restart-queue.ts` | The delayed restart: one pending request, applied only when `ExecutorLoad` reports no running worker and no queued ticket, checked every five seconds; the request lives in memory, so a process restart satisfies it and a plugin restart drops it |
+| `src/app/restart-panel.ts` | `restartViaPanel`: asks this instance's peer spawner panels to restart it, because a panel never restarts itself; a single-instance deployment has no peer and reports that |
+| `src/app/restart-guard.ts` | `restartCommand` and `RESTART_REFUSAL`: the shell commands a worker must not run because they stop or replace the DSH host its Session runs in |
 | `src/app/setup.ts` | Setup, and `setupChanged`, whether a save changes a field setup reads |
 | `src/app/passes.ts` | Passes, the pass scheduler |
 | `src/app/outbox.ts` | The Outbox: the Engine's `Outbox` port, the receipts and the `reply` effects that send them |
@@ -431,6 +436,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/worker-session.spec.ts` | The worker Session ids a Ticket's Assignments run in, fresh for each of a person's retries |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP, and the main-Session turn a restart resumes |
 | `tests/restart-recovery.spec.ts` | Which main-Session turn a restart cut off, and which one it must leave alone |
+| `tests/restart-queue.spec.ts` | The delayed restart: applied at once when idle, deferred while a worker runs or a ticket waits, one request, cancel, and a failed apply retried |
+| `tests/restart-panel.spec.ts` | The peer panel choice: never the self row, the next peer when one refuses, and the errors when no peer accepts |
+| `tests/restart-guard.spec.ts` | The shell commands the worker guard refuses, such as `tmux respawn-pane -k` and the panel's restart action, and the ordinary commands it allows |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |

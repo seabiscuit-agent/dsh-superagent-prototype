@@ -26,6 +26,8 @@ export interface MainToolsHost {
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
   readonly assessor: Pick<MasterAssessor, 'context' | 'read' | 'decide'>
   readonly resources: ResourceHost
+  /** The delayed instance restart this main Session alone may ask for; the Runtime owns the queue. */
+  readonly restart: RestartControl
   /** Schedules a pass to carry out work queued by an Engine command (such as an Eval or ticket resume). */
   requestPass(): void
   sendReplies(): Promise<void>
@@ -40,6 +42,24 @@ function routed(host: MainToolsHost, result: { decision?: DecisionKind; reason: 
     ...(ticket ? { ticket: ticketCard(ticket) } : {}) }
 }
 const fromDecision = (decision: Decision) => ({ decision: decision.kind, reason: reasonText(decision.reason), ticketId: decision.ticketId })
+/** The instance restart the main Session may ask for: applied by the Runtime once no worker is busy. */
+export interface RestartControl {
+  /** Asks for a restart now, or waits for the last worker when one runs or waits for a slot. */
+  request(input?: { reason?: string }): Promise<unknown>
+  /** Withdraws a pending restart. */
+  cancel(): { cancelled: boolean }
+}
+/**
+ * A settings block a model sent as a JSON string is parsed into the object it spells, which the block's own schema then
+ * checks; a main Session that passes `value` as text otherwise fails deep in the settings schema with a message about a
+ * string where an object was expected.
+ */
+function settingsValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value
+  try { return JSON.parse(value) as unknown } catch {
+    throw new Error('value is a string that is not JSON; pass the whole settings block as an object')
+  }
+}
 /**
  * One routing decision of `orchestrator_route`. The schema holds only its shape: each kind's fields are checked as its item
  * runs (`FIELDS`), so an item that lacks one, or whose value breaks a limit, is refused alone.
@@ -251,17 +271,27 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
       schema: z.object({
         block: z.enum(['policy', 'eval', 'executor', 'pause', 'source']).describe('pause pauses or resumes processing: new Evals, dispatch and replies.'),
         source: z.string().min(1).optional().describe('With block source: the Source instance id, such as github or feishu.'),
-        value: z.unknown().describe('The whole block; a Source takes { enabled, config }, pause takes { paused }.'),
+        value: z.unknown().describe('The whole block; a Source takes { enabled, config }, pause takes { paused }. A JSON string is parsed into the block it spells.'),
         revision: z.number().int().nonnegative().describe('The block\'s revision; pause ignores it.'),
       }).strict()
         .refine(args => (args.block === 'source') === (args.source !== undefined), 'source names the Source instance, with block source only'),
       execute: async args => {
-        if (args.block === 'pause') return host.settings.pause(z.object({ paused: z.boolean() }).parse(args.value).paused, 'tool')
+        const value = settingsValue(args.value)
+        if (args.block === 'pause') return host.settings.pause(z.object({ paused: z.boolean() }).parse(value).paused, 'tool')
         // Strip context_delivery since the main Session initiated the save itself.
         const { context_delivery: _delivery, ...saved } = await host.settings.save(args.block === 'source' ? `source:${args.source!}` : args.block,
-          args.value, args.revision, 'tool')
+          value, args.revision, 'tool')
         return saved
       },
+    }),
+    tool({
+      name: 'orchestrator_restart',
+      description: 'Restart this DSH instance gracefully through a spawner panel: a peer normally, or this instance\'s own panel when it advertises self-restart. Only the main Session may restart it; a worker must report the need. The restart waits until no worker runs and no ticket waits for a slot, because a restart interrupts their turns: ask again to read the pending request, or pass cancel to withdraw it.',
+      schema: z.object({
+        reason: z.string().trim().max(200).optional().describe('Why the restart is needed; kept with the pending request.'),
+        cancel: z.boolean().default(false).describe('Withdraw a pending restart instead of asking for one.'),
+      }).strict(),
+      execute: async args => args.cancel ? host.restart.cancel() : host.restart.request({ reason: args.reason }),
     }),
     tool({
       name: 'orchestrator_policy_sync',
