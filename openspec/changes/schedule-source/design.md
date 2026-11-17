@@ -126,8 +126,8 @@ while (!signal.aborted) {
 ### 4. 逐行游标放 `KV.schedule`，不新建表
 
 `src/app/source-context.ts` 的 `state` 就是 store 的 key/value：`get` / `set` / `keys(prefix)`。
-新增 `KV.schedule = { cursor: family<{due: string}, [job: string]>('schedule-cursor:') }`，
-记录该行已处理的最后到期时刻（UTC ISO 字符串）与触发 id。备选是新建 `schedule` 表或复用
+新增 `KV.schedule = { cursor: family<{due: string; triggerId: string}, [job: string]>('schedule-cursor:') }`，
+记录该行已处理的最后到期时刻（UTC ISO 字符串）与对应触发 id。备选是新建 `schedule` 表或复用
 `effect` 表：
 
 - 新表要动 `store` 与 schema 版本，收益只有「可查询」，而面板只需要下次时刻（可由 cron 现算）。
