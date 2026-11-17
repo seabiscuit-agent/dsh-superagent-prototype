@@ -145,7 +145,7 @@ it('accepts a local candidate and renders the acknowledgement into the main sess
     expect(vi.mocked(Commands.prototype.lark).mock.calls.filter(([args]) => args[1] === '+messages-reply')).toEqual([])
     const master = host.agents.get(host.runtime.masterId)!
     const ack = master.inject.mock.calls.map(([injected]) => injected)
-      .find((injected) => injected.id === host.runtime.sessions.promptedId(`local-receipt:${key('ack', triggerId)}`))
+      .find((injected) => injected.id === `dsh-superagent:local-receipt:${key('ack', triggerId)}`)
     expect(ack).toMatchObject({ role: 'user', source: { kind: 'dsh-superagent', form: 'notice' } })
     expect(ack!.source).toMatchObject({ summary: `Acknowledgement for ticket ${ticket.id}: On it: renaming the Save button to Submit.` })
     // Repeating the confirmation is idempotent: the same ticket, and no second one.

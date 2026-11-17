@@ -28,7 +28,9 @@ export function feishu(id: string, text: string, overrides: Record<string, unkno
     mentions: [{ id: 'ou_bot' }], ...overrides }, 'ou_bot', 'cli_bot')!
 }
 
-type RegisteredTool = { name: string; execute: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }
+type RegisteredTool = { name: string
+  execute: (args: unknown, execution: { signal: AbortSignal; concludeTurn?: () => void },
+    turn?: { concludeTurn(): void }) => Promise<unknown> }
 type FakeAgent = {
   id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }
   cancel: Mock; inject: Mock<(message: UserMessage) => void>; steer: Mock<(message: UserMessage) => void>; followup: Mock<(message: UserMessage) => void>
@@ -265,7 +267,9 @@ export async function startRuntime(seed?: (store: Store) => void) {
   const runTool = async (sessionId: string, name: string, args: unknown) => {
     const tool = tools.get(sessionId)?.get(name)
     if (!tool) throw new Error(`Tool ${name} is not registered for ${sessionId}`)
-    return await tool.execute(args, { signal: new AbortController().signal }) as Record<string, unknown>
+    // DSH's tool run context carries the signal and the turn a tool may conclude.
+    const execution = { signal: new AbortController().signal, concludeTurn: () => {} }
+    return await tool.execute(args, execution, execution) as Record<string, unknown>
   }
   /** Route one decision with the main Session's orchestrator_route, answering its result; a refused one throws its reason. */
   async function route(item: Record<string, unknown>): Promise<Record<string, unknown>> {

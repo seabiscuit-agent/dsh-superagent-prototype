@@ -14,6 +14,7 @@ import type { Effects } from './effects.ts'
 import type { Variable } from './execution-environment.ts'
 import { restartCommand } from './restart-guard.ts'
 import { RetryHealth } from './retry-health.ts'
+import { TurnGuard } from './turn-guard.ts'
 import { initializeRoleModel } from './role-models.ts'
 import { bundledSkills } from './skill-files.ts'
 import { SKILL_PREFIX, type PromptVersion, type Prompts } from './prompts.ts'
@@ -152,6 +153,8 @@ export class Sessions {
     ctx.on('agent/status', ({ agent, status }) => {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
+    // A turn that owes the owner a word after a worker report must not close silently.
+    new TurnGuard({ context: ctx, masterId: this.host.masterId }).install()
   }
   /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
@@ -186,6 +189,17 @@ export class Sessions {
   }
   /** The id of the message `prompt` delivers under `requestId`, which DSH's inbox events name it by. */
   promptedId(requestId: string): MessageId { return messageId(key(requestId)) }
+  /**
+   * Renders one local reply receipt into the main Session under its literal `local-receipt:` message id.
+   *
+   * Unlike `prompt`, the id is not hashed: the turn guard reads this prefix to know the owner already received the
+   * answer in this turn, so a receipt that concluded a turn is never mistaken for a silent one.
+   */
+  async renderReceipt(receiptId: string, text: string, summary: string): Promise<void> {
+    const result = await this.ctx.sessionController.resolveAgent(this.host.masterId as SessionId)
+    if ('error' in result) throw result.error
+    await this.agentDelivery.send(result.agent, `local-receipt:${receiptId}`, text, { inject: summary }, this.host.lifetime)
+  }
   /** Enqueues a steering relay to the main Session; relays are durable and retried by `Effects` until delivered, at most once per `requestId`. */
   relay(requestId: string, text: string): void { this.host.effects.enqueue('relay', requestId, { text }) }
   /** Enqueues a durable background notice for injection into the main Session; a new notice with the same `name` replaces a still-waiting notice of that `name`. */
@@ -230,7 +244,7 @@ export class Sessions {
           const image = value && typeof value === 'object' && 'image' in value ? (value as { image: never }).image : undefined
           return image ? [text, { type: 'image' as const, attachment: image }] : [text]
         } },
-        execute: (args, execution) => execute(schema.parse(args), execution.signal) }))
+        execute: (args, execution) => execute(schema.parse(args), execution.signal, execution) }))
     }
   }
   /** Returns `sessionId`'s active model-budget retry state (`{ model_retry }`) for status listings, or `{}` when not waiting on one. */

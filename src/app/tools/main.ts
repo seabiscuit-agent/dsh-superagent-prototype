@@ -250,11 +250,15 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         human_action: z.string().trim().min(1).optional().describe('Required for attention: the ticket\'s current attention question.'),
         text: z.string().min(1).max(20000),
       }).strict(),
-      execute: async args => {
+      execute: async (args, _signal, turn) => {
         const reply = host.engine.reply({ purpose: args.purpose, text: args.text, ...(args.trigger_id ? { triggerId: args.trigger_id } : {}),
           ...(args.ticket_id ? { ticketId: args.ticket_id } : {}), ...(args.human_action ? { question: args.human_action } : {}) })
         await host.sendReplies()
-        return { status: host.store.replyStatus(reply.id) ?? reply.status }
+        const status = host.store.replyStatus(reply.id) ?? reply.status
+        // The receipt is the owner-facing message: end the turn here so the model cannot append a duplicate or paraphrase of it.
+        // A receipt still pending is not one the owner can see yet, so the turn continues and the model says where things stand.
+        if (status === 'sent') turn.concludeTurn()
+        return { status }
       },
     }),
     tool({

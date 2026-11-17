@@ -40,7 +40,7 @@ const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.source
 const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem)
 let directory: string
 let controller: { create: ReturnType<typeof vi.fn>; selectModel: ReturnType<typeof vi.fn>; resolveAgent: ReturnType<typeof vi.fn>; rename: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn>; inspect: ReturnType<typeof vi.fn> }
-type RegisteredTool = { name: string; output: { render: (args: unknown, result: unknown) => unknown }; execute: (args: unknown, execution: { signal: AbortSignal }) => Promise<unknown> }
+type RegisteredTool = { name: string; output: { render: (args: unknown, result: unknown) => unknown }; execute: (args: unknown, execution: { signal: AbortSignal }, turn: { concludeTurn(): void }) => Promise<unknown> }
 let tools: Map<string, Map<string, RegisteredTool>>
 type Section = { name: string; text: (context: { signal?: AbortSignal }) => string; interpolate?: boolean }
 let sections: Map<string, Section>
@@ -60,10 +60,14 @@ async function api(method: string, path: string): Promise<{ status: number; body
   return { status, body: JSON.parse(text) }
 }
 let agents: Map<string, { id: string; status: string; inbox: { nextTurn: UserMessage[]; nextStep: UserMessage[] }; cancel: ReturnType<typeof vi.fn>; inject: ReturnType<typeof vi.fn> }>
+/** The tools whose turns a tool call concluded at its step, by `<sessionId>:<tool>`. */
+const conclusions = new Set<string>()
 const runTool = async (sessionId: string, name: string, args: unknown) => {
   const tool = tools.get(sessionId)?.get(name)
   if (!tool) throw new Error(`Tool ${name} is not registered for ${sessionId}`)
-  const output = await tool.execute(args, { signal: new AbortController().signal })
+  // DSH's tool run context carries both the signal and the turn a tool may conclude.
+  const execution = { signal: new AbortController().signal, concludeTurn: () => { conclusions.add(`${sessionId}:${name}`) } }
+  const output = await tool.execute(args, execution, execution)
   expect(JSON.parse(JSON.stringify(output))).toStrictEqual(output)
   await runtime.idle()
   return output as Record<string, unknown>
@@ -337,8 +341,12 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'need a decision', human_action: 'Desktop too?' })
   expect(runtime.store.tickets.get(ticket.id)!.attention).toMatchObject({ question: 'Desktop too?' })
   expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_attention', ticket: { ticket_id: ticket.id, attention: { question: 'Desktop too?' } } })
+  conclusions.clear()
   await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'other', text: 'x' })).rejects.toThrow('current attention question')
+  expect(conclusions.has(`${runtime.masterId}:orchestrator_reply`)).toBe(false)
+  // A delivered receipt is the owner-facing message: the reply tool concludes its turn so no duplicate body follows.
   expect(await runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'Desktop too?', text: '要不要也改桌面端？' })).toEqual({ status: 'sent' })
+  expect(conclusions.has(`${runtime.masterId}:orchestrator_reply`)).toBe(true)
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 42, human_action: null })
   const bound = runtime.store.tickets.get(ticket.id)!
   expect(pullOf(bound)).toBe(42)
@@ -360,6 +368,20 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
   expect(agents.get(sessionId)!.cancel).not.toHaveBeenCalled()
   const notice = runtime.store.receipts.waiting().find(item => item.kind === 'notice')
   expect(notice ?? runtime.store.replyStatus(key('pr-terminal', '42', 'feishu', JSON.stringify({ chatId: CHAT, messageId: 'om_1' }), 'merged'))).toBeTruthy()
+})
+
+it('keeps a master turn that owes the owner a word from closing silently after a worker report', async () => {
+  const { sessionId } = await acceptedTicket()
+  await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'reviewed' })
+  const report = masterDeliveries().at(-1)!
+  expect(report.text).toContain('"worker_report"')
+  deliveries.mockClear()
+  const master = agents.get(runtime.masterId)! as unknown as { session: { append(type: string, data: unknown): void } }
+  master.session.append('turn/start', { turn: 42 })
+  master.session.append('user/message', { id: report.id, role: 'user', content: [{ type: 'text', text: report.text }], source: { kind: 'dsh-superagent', form: 'relay' } })
+  ;(runtime as unknown as { ctx: Context }).ctx.emit('agent/turn-stopping', { agent: agents.get(runtime.masterId), turn: 42, signal: new AbortController().signal } as never)
+  expect(masterDeliveries()).toEqual([expect.objectContaining({ mode: 'steer', id: 'dsh-superagent:turn-check:42' })])
+  expect(masterDeliveries()[0]!.text).toContain('Turn check')
 })
 
 it('lists each ticket with the Threads it subscribes to, as their Sources describe them', async () => {
