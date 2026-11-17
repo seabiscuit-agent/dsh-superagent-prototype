@@ -176,6 +176,8 @@ export class Runtime extends Service implements SourceHost {
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       const restartQueue = this.restartQueue = new RestartQueue({
         load: () => executorLoad(store, this.executor.activeCount()),
+        // 主会话自己也在这一轮里：重启等它的回合结束再执行，避免把它正在写/读的这一轮切断。
+        mainBusy: () => this.ctx.agents.get(this.masterId as SessionId)?.status === 'running',
         apply: async () => { await restartViaPanel({ port: ctx.webServer.port }) },
         schedule: (run, ms) => {
           const timer = setTimeout(run, ms)
