@@ -57,6 +57,17 @@ it('assembles every role from fixed sections around the team sections, whatever 
   expect(composePrompt(config, 'worker')).not.toContain(mainAdmissionPolicy)
 })
 
+it('forbids parenthetical asides in reply bodies and answers nothing new with silence', () => {
+  // Both roles read runtime/replies, so the constraint must stay in the built-in part, not only in team text.
+  expect(guides.replies).toContain('A reply body carries no parenthetical aside')
+  expect(guides.replies).toContain('When there is nothing new for the person, send nothing')
+  for (const role of ['orchestrator', 'worker'] as const) {
+    const prompt = composePrompt(defaultPrompts(), role)
+    expect(prompt).toContain('A reply body carries no parenthetical aside')
+    expect(prompt).toContain('removing the brackets from a note does not turn it into a reply')
+  }
+})
+
 it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-file-'))
   // promptFile resolves paths relative to prompts/; use a relative path to reach the temp dir.
