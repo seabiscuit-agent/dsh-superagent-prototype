@@ -79,9 +79,10 @@ When a task row's due time arrives, the host SHALL 产生一条 Trigger 并交�
 #### Scenario: 只有时间产生的请求不会自动建单
 
 - **GIVEN** 该任务行的 admission 格为默认 `ignore`，且 eval mode 为 `auto`
-- **WHEN** 到点产生 Trigger
-- **THEN** intake 记下一条 filtered 记录（reason 为 `admission_ignored`），不建工单、不唤醒任何
-  worker 会话
+- **WHEN** 到点产生 Trigger 并进入评估
+- **THEN** `machineGate()` 返回 `admission_ignored`，该 Trigger 落成一条 `ignore` 决策（不是
+  intake 的 `filtered` 记录——`filtered` 只在 `scope` 返回 `listened: false` 时写），不建工单、
+  不唤醒任何 worker 会话
 
 ### Requirement: 同一到期时刻只触发一次
 
@@ -151,9 +152,11 @@ MUST 对该来源的 Trigger 返回 `observed: true`（并带 `row = <job key>`�
 #### Scenario: 任务行已被删除或停用后的迟到 Trigger
 
 - **GIVEN** 一条 Trigger 的 `meta.job` 在当前配置里已不存在，或该行 `enabled = false`
-- **WHEN** 该 Trigger 到达 intake 或之后的重新校验
-- **THEN** `scope()` 返回 `observed: false`（或 `{listened: false, reason: "source_disabled"}`），
-  该 Trigger 被 filtered 记录，不建工单、不被旧结论唤起
+- **WHEN** 该 Trigger 到达 intake 或之后重新校验
+- **THEN** `scope()` 返回 `observed: false`，Trigger 仍被保存但 `machineGate()` 以 `not_human`
+  拒绝，落成一条 `ignore` 决策；若整个来源实例被关闭，则 `scope()` 返回
+  `{listened: false, reason: "source_disabled"}`，intake 直接写 `filtered` 记录。两种情况下都不
+  建工单、不被旧结论唤起
 
 #### Scenario: 打开准入后由评估决定是否建单
 

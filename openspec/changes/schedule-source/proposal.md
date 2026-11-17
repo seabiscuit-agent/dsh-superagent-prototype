@@ -97,7 +97,8 @@ Trigger 不直接派工、只补最近一次错过。本变更就是它的提案
 6. **实施：生产实测**（未来）：在 superagent `:3082` 配一行 `*/1 * * * *` 任务，观察
    `schedule:<key>` 线程随时间出现 Trigger（`at` 与 `meta.due` 对齐到期时刻）；把该任务行的
    admission 格设为 `inferred` 且 eval mode 为 `auto` 时产生工单，设为 `ignore` 时只留一条
-   filtered 记录、不建单；把该行 cron 改坏，来源列表的 `schedule` 健康项变 `error` 并点名该行。
+   `ignore` 决策（不是 `filtered` 记录）、不建单；把该行 cron 改坏，来源列表的 `schedule` 健康
+   项变 `error` 并点名该行。
 
 ## Impact
 
