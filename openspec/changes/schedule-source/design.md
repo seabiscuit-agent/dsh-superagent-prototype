@@ -213,6 +213,13 @@ title，`note` 说明 cron 与时区），`cells` 只允许 `unlistedUnaddressed
 `tests/sources.spec.ts` 的 `host(overrides)` 与 `tests/registry.spec.ts` 的假 deps 补一个默认
 `paused: () => false`。
 
+**为什么这不违背「暂停期间来源仍记录收到的 Trigger」**：`src/app/runtime.ts:389` 的注释写着
+*Hold evaluation, dispatch, and outbound delivery while paused or awaiting setup; sources still
+record incoming triggers.* 那条针对的是**外部推来的**消息——暂停期间丢掉一条飞书消息就永远
+丢了，所以必须先落库。`schedule` 相反：它的「事件」由时钟推导，暂停期间错过的档位不需要被
+记下来，恢复时按游标重算即可。把它也写进库里只会让恢复后的评估量随暂停时长线性增长。因此本
+来源是那条规则的**特例**，而不是推翻它；这两个行为在同一个 `paused()` 口径下并存。
+
 ## Risks / Trade-offs
 
 - **默认 `ignore` 让「装好却什么都不发生」** → 面板要在该行旁明确写「该行需要在策略里打开准入

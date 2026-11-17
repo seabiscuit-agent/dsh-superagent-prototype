@@ -72,6 +72,9 @@
   与 `Tickets` 唤醒路径（`src/core/tickets.ts:264`）生效。所以「暂停期间不触发」必须靠新增
   `SourceContext.paused()`（实现见 design 决策 9），否则暂停期间照常入域、恢复后一次性评估一堆，
   与「只补最近一次」矛盾。这是一处跨模块接口变更，要与 `schedule` 同 PR 落地。
+- 注意 `src/app/runtime.ts:389` 的注释「sources still record incoming triggers」：那是给**外部推来**
+  的消息定的规矩（丢了就永远丢）。schedule 的事件可由时钟重算，暂停期间错过无需落库，恢复时按
+  游标补一次即可——它是这条规则的例外，不是反例。
 
 ## 同批归档
 
