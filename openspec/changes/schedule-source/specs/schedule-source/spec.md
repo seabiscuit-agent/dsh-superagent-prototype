@@ -104,9 +104,13 @@ The system SHALL 保证同一个 `(key, due)` 最多入域一次：重复产生�
 ### Requirement: 游标持久化与错过策略
 
 The system MUST 为每个任务行把「已处理的最后一个到期时刻」持久化为游标；宿主重启、来源被
-关闭后重新启用、`policy.paused` 由真变假时，SHALL 从游标继续，并**只为每个任务行补最近一次**
-错过的到期时刻，绝不 replay 每一个错过的档位。首次见到一个新任务行时，游标取「当前时刻之前
-最近的一次到期时刻」，因此新建一行不会立刻补发历史。
+关闭后重新启用、暂停由真变假时，SHALL 从游标继续，并**只为每个任务行补最近一次**错过的到期
+时刻，绝不 replay 每一个错过的档位。首次见到一个新任务行时，游标取「当前时刻之前最近的一次
+到期时刻」，因此新建一行不会立刻补发历史。
+
+watch 循环 MUST 在暂停期间不产生 Trigger、也不推进游标，使暂停期间的每个到期时刻都在恢复后
+折叠成一次。判断暂停 MUST 走新的 `SourceContext.paused()`：现有 `SourceContext` 没有暴露
+settings 或暂停状态（`src/sources/host.ts`），来源侧拿不到它。
 
 #### Scenario: 停机三天后恢复只补一次
 
@@ -124,9 +128,9 @@ The system MUST 为每个任务行把「已处理的最后一个到期时刻」�
 
 #### Scenario: 暂停期间不触发
 
-- **GIVEN** `policy.paused` 为真，期间有多个到期时刻
+- **GIVEN** `ctx.paused()` 为真（`policy.paused` 或部署检查未完成），期间有多个到期时刻
 - **WHEN** Passes 与 watch 循环继续运行
-- **THEN** 不产生 Trigger；恢复后只补最近一次，不补全部
+- **THEN** watch 不产生 Trigger 也不推进游标；恢复后只补最近一次，不补全部
 
 ### Requirement: 触发走既有授权链
 

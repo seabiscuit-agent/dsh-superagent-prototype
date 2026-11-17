@@ -63,6 +63,11 @@
 - 定时建的工单没有 `channel`（`create()` 只收集 `trigger.channel` 存在的来源），回复时抛
   `UserError('noChannel')`；这是已知限制，留给后续 `report_to`。
 - `SourceContext` 不含 `masterId`，来源只能 `ctx.notify()` 或 `ctx.receive()`，不能直接唤醒主会话。
+- **`SourceContext` 不暴露 settings/paused**：`intake.receive()` 里也没有 paused 检查，暂停只在
+  `Engine.evaluateDue()`（`src/core/engine.ts:88`）、`Evals.due()`（`src/core/evals.ts:37-42`）
+  与 `Tickets` 唤醒路径（`src/core/tickets.ts:264`）生效。所以「暂停期间不触发」必须靠新增
+  `SourceContext.paused()`（实现见 design 决策 9），否则暂停期间照常入域、恢复后一次性评估一堆，
+  与「只补最近一次」矛盾。这是一处跨模块接口变更，要与 `schedule` 同 PR 落地。
 
 ## 同批归档
 

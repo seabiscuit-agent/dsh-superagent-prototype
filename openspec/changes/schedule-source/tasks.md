@@ -15,7 +15,7 @@
 
 ## 3. watch 循环与游标
 
-- [ ] 3.1 `watch(ctx, signal)`：`await ctx.ready` → `!ctx.configured()` 报 `health('paused','setupPending')` 并返回 → 循环内先算最近到期、`pause(clamp(wait, 1000, 60000), signal)`、再逐行处理
+- [ ] 3.1 `watch(ctx, signal)`：`await ctx.ready` → `!ctx.configured()` 报 `health('paused','setupPending')` 并返回 → 循环内先判 `ctx.paused()`（真则 `pause(60000, signal)` 后 continue，不产 Trigger、不推进游标）→ 否则算最近到期、`pause(clamp(wait, 1000, 60000), signal)`、再逐行处理
 - [ ] 3.2 `src/kv.ts` 新增 `KV.schedule = { cursor: family<{due: string, triggerId: string}, [job: string]>('schedule-cursor:') }`
 - [ ] 3.3 首次见到某行：游标初始化为「当前时刻之前最近的一档到期时刻」，不产生 Trigger
 - [ ] 3.4 到期处理：`trigger = {id: key('schedule', job, due), source, threads: [{source, id: job}], actor: {source, id: ''}, human: false, at: due, text, meta: {job, due, cron, timezone}}` → `ctx.receive(trigger)` → 在同一个 `ctx.atomic()` 里推进游标
@@ -28,12 +28,12 @@
 - [ ] 4.1 `tsdown.config.ts` 第一组 entry 加 `'schedule-watch': 'src/sources/schedule.ts'`
 - [ ] 4.2 `package.json` exports 加 `"./schedule-watch": "./lib/schedule-watch.js"`
 - [ ] 4.3 `cordis.patch.yml` 在 `dsh-superagent-local` 之后插入 `dsh-superagent-schedule`（`disabled: true`），并同步改 `tests/bundle-patch.spec.ts:33-35` 的顺序断言
-- [ ] 4.4 `src/sources/host.ts` 的 `HEALTH_TEXT` 加新 code（如 `scheduleJobInvalid`），`src/client/locales.ts` 的 `TEXT` 表加对应中英文（`tests/locales.spec.ts` 要求成对）
+- [ ] 4.4 `src/sources/host.ts`：`SourceContext` 加 `paused(): boolean`，`HEALTH_TEXT` 加新 code（如 `scheduleJobInvalid`）；`src/app/source-context.ts` 的 `SourceContextDeps` 加并转接 `paused()`；`src/app/runtime.ts` 的 `sourceDeps` 传 `paused: () => runtime.paused()`（与 `:388` 同口径）；`tests/sources.spec.ts` 的 `host()` 与 `tests/registry.spec.ts` 的假 deps 补默认 `paused: () => false`；`src/client/locales.ts` 的 `TEXT` 表加对应中英文（`tests/locales.spec.ts` 要求成对）
 - [ ] 4.5 面板 Source 卡片验证：任务行可增删改；非法行使来源列表的 `schedule` 健康项变 `error` 并点名该行（**不**在行编辑器里显示下次触发时刻——现有面板无此通道，见 spec「触发与状态可观察」）
 
 ## 5. 测试与验收
 
-- [ ] 5.1 新建 `tests/schedule.spec.ts`（假时钟）：每分钟任务连续 3 次到期产 3 条 Trigger 且 id 互异；停机三天只补 1 条且 `at` 为最后一档；同一 due 重启两次只入域一次；`enabled=false` / 来源关闭 / `policy.paused` 三种情况都不产 Trigger
+- [ ] 5.1 新建 `tests/schedule.spec.ts`（假时钟）：每分钟任务连续 3 次到期产 3 条 Trigger 且 id 互异；停机三天只补 1 条且 `at` 为最后一档；同一 due 重启两次只入域一次；`enabled=false` / 来源关闭 / `ctx.paused()` 为真三种情况都不产 Trigger，且暂停期间游标不前进
 - [ ] 5.2 准入用例：默认 `ignore` 时不建单且 reason 为 `admission_ignored`；改为 `inferred` + `auto` 且规则命中时建单，mandate strength 为 `inferred`、cell 为 `unlistedUnaddressed`
 - [ ] 5.3 `env -u GIT_CONFIG_GLOBAL pnpm check` 通过；`tests/sources.spec.ts`、`tests/registry.spec.ts` 的相关断言同步更新
 - [ ] 5.4 `openspec validate --all --strict` 通过

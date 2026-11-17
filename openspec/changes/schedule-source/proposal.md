@@ -36,6 +36,9 @@ Trigger 不直接派工、只补最近一次错过。本变更就是它的提案
   intake 的 duplicate 分支丢弃，不重复建单。
 - 每个任务把 `cursor`（上次触发的到期时刻）持久化到 store；重启、暂停、来源关闭后恢复时
   **只补最近一次**错过的到期时刻，不 replay 全部。
+- 给 `SourceContext` 加 `paused(): boolean`：现有接口不暴露 settings，来源侧无从判断暂停，而
+  暂停期间若照常产 Trigger，恢复后会一次性评估一堆，违背「只补最近一次」。暂停期间不产
+  Trigger、不推进游标。
 - 到点**只产生 Trigger**：不建单、不派工、不调用模型；是否建单由现有 Policy、admission
   表与评估模式决定。
 - 新增 `schedule` 健康项，在任务行 cron / 时区非法时点名该行（来源列表只渲染 `error` 与
@@ -87,7 +90,8 @@ Trigger 不直接派工、只补最近一次错过。本变更就是它的提案
    - `cron="0 9 * * *"`、`timezone="Asia/Shanghai"` 解析出的到期时刻为 `01:00Z`；
    - `cron="0 9 * * *"`、`timezone="America/New_York"` 在 DST 切换日仍是当地 9 点；
    - 非法 cron、非法时区使该行不触发，且 `schedule` 健康项为 `error` 并带出行 key；
-   - `enabled=false`、来源关闭、`policy.paused` 三种情况下都不产生 Trigger。
+   - `enabled=false`、来源关闭、`ctx.paused()` 为真三种情况下都不产生 Trigger，且暂停期间游标
+     不前进。
 5. **实施：回归**（未来）：`env -u GIT_CONFIG_GLOBAL pnpm check` 通过；
    `tests/sources.spec.ts`、`tests/registry.spec.ts`、`tests/bundle-patch.spec.ts` 同步更新后通过。
 6. **实施：生产实测**（未来）：在 superagent `:3082` 配一行 `*/1 * * * *` 任务，观察
@@ -99,7 +103,9 @@ Trigger 不直接派工、只补最近一次错过。本变更就是它的提案
 
 - 代码（实施阶段）：新增 `src/sources/schedule.ts`（kind、配置面、watch 循环）、
   `src/sources/schedule-cron.ts`（cron 与时区的纯函数，便于单测）；改
-  `src/sources/host.ts`（新增 health code）、`src/client/locales.ts`（对应该 code 的中英文案）、
+  `src/sources/host.ts`（`SourceContext` 加 `paused()` + 新增 health code）、
+  `src/app/source-context.ts` 与 `src/app/runtime.ts`（转接 `paused()`）、`src/client/locales.ts`
+  （对应新 code 的中英文案）、
   `src/kv.ts`（新增 `KV.schedule` 游标记录）、`tsdown.config.ts`、`package.json` 的
   `exports`（`./schedule-watch`）、`cordis.patch.yml`（insert 一行）、
   `tests/bundle-patch.spec.ts`（顶层 id 顺序断言）。

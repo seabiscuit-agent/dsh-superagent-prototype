@@ -91,6 +91,7 @@ the list who does not address the agent applies.」）。
 await ctx.ready
 if (!ctx.configured()) { report('schedule', health('paused','setupPending')); return }
 while (!signal.aborted) {
+  if (ctx.paused()) { await pause(60_000, signal); continue }   // 暂停期间不产 Trigger、不推进游标
   const wait = 计算所有行里最近的一次到期时刻 - now，夹在 [1s, 60s]
   await pause(wait, signal)
   ... 逐行判到期、产 Trigger、推进游标 ...
@@ -183,6 +184,35 @@ title，`note` 说明 cron 与时区），`cells` 只允许 `unlistedUnaddressed
 之后插入 `dsh-superagent-schedule`，并同步改 `tests/bundle-patch.spec.ts:33-35` 的顺序断言。
 默认 `disabled: true`，理由与 `feishu` 相同：没有配置时不产生任何行为，也不占用健康面板一行。
 
+### 9. 新增 `SourceContext.paused()`，暂停语义落在来源侧
+
+现有 `SourceContext`（`src/sources/host.ts`）只暴露 deployment / commands / ready /
+`configured()` / `problem` / `config()` / `receive()` / `atomic()` / `state` / `threads` /
+`tickets` / `triggers` / `notify()` / `report()`，**没有 settings，也就没有暂停状态**；
+`sourceContextOf`（`src/app/source-context.ts`）的 `SourceContextDeps` 同样没有。而
+`intake.receive()` 里也没有 paused 检查——暂停只在 `Engine.evaluateDue()`
+（`src/core/engine.ts:88`）、`Evals.due()`（`src/core/evals.ts:37-42`）与 `Tickets` 的唤醒路径
+（`src/core/tickets.ts:264`）上生效。
+
+所以「暂停期间不触发」不可能只靠 `ctx.receive()` 自然满足：watch 循环若照常产出 Trigger，它们
+会被 intake 正常入域、写 Input 与线程 pending，只是不评估——恢复后一次性评估一大堆，与「只补
+最近一次」的错过策略直接矛盾。
+
+备选：
+
+- A：暂停期间照常产 Trigger，由下游 limit 抑制。否决——游标照常前进会让暂停期间的事件永久
+  丢失，而按「错过即错过」它应当折叠成恢复后的**一次**。
+- B：让来源读 settings（新增 `ctx.settings()`）。否决——把整个 Settings 暴露给来源，来源就
+  可以读 Policy、executor 等无关配置，扩大了来源的权限面。
+- C：只加 `SourceContext.paused(): boolean`（`sourceContextOf` 由 `runtime.paused()` 供给，
+  即 `!setup.configured() || store.settings().paused`，与 `src/app/runtime.ts:388` 同一口径）。
+  选 C：一个布尔，语义与宿主其它暂停判断一致，来源侧只多做一次 if。
+
+实现落点：`src/sources/host.ts` 加成员；`src/app/source-context.ts` 的 `SourceContextDeps` 加
+`paused(): boolean` 并转接；`src/app/runtime.ts` 的 `sourceDeps` 里 `paused: () => runtime.paused()`；
+`tests/sources.spec.ts` 的 `host(overrides)` 与 `tests/registry.spec.ts` 的假 deps 补一个默认
+`paused: () => false`。
+
 ## Risks / Trade-offs
 
 - **默认 `ignore` 让「装好却什么都不发生」** → 面板要在该行旁明确写「该行需要在策略里打开准入
@@ -207,6 +237,10 @@ title，`note` 说明 cron 与时区），`cells` 只允许 `unlistedUnaddressed
   没配任何任务行，循环按 60 秒上限睡眠并且不产生任何 store 写入。
 - **`Passes` 的 2 秒节拍与 watch 循环并存** → 两者职责正交（effects/Eval 到期 vs 产生新事件），
   不共享状态，唯一交叉点是 `ctx.receive()` 触发的 `this.request()`。
+- **给 `SourceContext` 加 `paused()` 会动到所有实现方**（`src/app/source-context.ts`、
+  `src/app/runtime.ts`、`tests/sources.spec.ts`、`tests/registry.spec.ts` 的假 deps）→ 这是一处
+  跨模块接口变更，必须与 `schedule` 同一 PR 落地；若评审认为不该扩大 `SourceContext`，退路是
+  本变更先只做「停机/重启只补一次」，把暂停语义移到后续变更，spec 里对应的场景要一并删掉。
 
 ## Migration Plan
 
