@@ -47,6 +47,6 @@
 - [x] 5.2 写 `docs/notes/2026-11-17-openspec-p0-plan.md`（≤60 行），链接本变更并记录
   根因、机制、验证命令、回滚注意
 - [x] 5.3 `pnpm check`、`openspec validate --all --strict` 通过
-- [ ] 5.4 生产验收（superagent `:3082`）：排 `now+2m` 复查，等待期无 worker turn；到点唤醒；
-  重启宿主后重排一次仍唤醒；把结果贴进 PR
+- [x] 5.4 实测（分支实例 `127.0.0.1:3153`，非 `:3082`）：排 `now+90s` 复查，等待期无 worker turn；
+  到点唤醒一次、effect 行删除、Input 送达 worker；宿主重启后再排仍唤醒；结果已贴 PR #16
 - [x] 5.5 新会话只读本变更四件套，能复述 due 存储位置、key 规则、暂停/错过策略、取消入口

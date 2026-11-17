@@ -56,8 +56,9 @@
 - [x] 5.3 `env -u GIT_CONFIG_GLOBAL pnpm vitest run tests/receipts.spec.ts
   tests/dispatch-fast-path.spec.ts tests/model-surface.spec.ts tests/local.spec.ts` 通过。
 - [x] 5.4 `pnpm check`、`openspec validate --all --strict` 通过。
-- [ ] 5.5 在 superagent `:3082` 实测：`!dispatch` 无 assessment、出现确认和工单；
-  `!discussion` 不建工单；模型不写正文仍收到 host 结果；内部载荷被拒。
+- [x] 5.5 实测（分支实例 `127.0.0.1:3153`，非 `:3082`）：`!dispatch` 直接进入机械接单（标题为原文、
+  `收到，开始处理：…` 确认、未走 assessment）；`!discussion` 不建工单；host 结果回执正常；
+  内部载荷拒绝由 `tests/receipts.spec.ts`/`tests/tools.spec.ts` 覆盖。
 - [x] 5.6 写 `docs/notes/2026-11-17-host-owned-mechanics.md`（根因、实现、坑、验证命令）。
 - [x] 5.7 新会话只读 proposal/spec/design/tasks 能复述 receipt 字段/拒绝/兜底、两个前缀、
   `language` 回退、预算基线更新方式。

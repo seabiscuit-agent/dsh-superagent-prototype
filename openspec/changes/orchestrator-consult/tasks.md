@@ -84,6 +84,7 @@
 - [x] 8.2 `pnpm check` 通过。
 - [x] 8.3 `openspec validate --all --strict` 与 `openspec list` 通过。
 - [ ] 8.4 在 superagent `:3082` 实测：orchestrator 回答后 worker 继续且无 IM；escalate 后人答
-  worker 恢复；旧 attention 工单可回复。
+  worker 恢复；旧 attention 工单可回复。（已在分支实例 `:3153` 验证 orchestrator 问答闭环；
+  escalate/人答/旧 attention 仍只有自动化测试覆盖）
 - [x] 8.5 写 `docs/notes/2026-11-17-orchestrator-consult.md`，记录根因、实现、坑与验证命令。
 - [x] 8.6 新会话只读 proposal/spec/design/tasks 能复述字段、目标、答案 Input、升级/结案规则。
