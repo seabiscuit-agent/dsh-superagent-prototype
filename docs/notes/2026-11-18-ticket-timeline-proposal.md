@@ -45,10 +45,13 @@
 ## 验证
 
 ```sh
-openspec validate --all --strict          # 7 passed, 0 failed
-openspec status --change ticket-timeline   # 4/4 artifacts
-openspec show ticket-timeline --json | head
+openspec validate --all --strict                    # 7 passed, 0 failed，退出码 0
+openspec validate ticket-timeline --strict          # Change 'ticket-timeline' is valid
+openspec status --change ticket-timeline            # 4/4 artifacts complete
+openspec list                                       # ticket-timeline 0/25 tasks（提案阶段）
+env -u GIT_CONFIG_GLOBAL pnpm vitest run            # 69 files, 1295 tests passed
+pnpm check                                          # typecheck + test + build 退出码 0
 ```
 
-实施阶段（提案未实施，以下命令尚未运行）：`env -u GIT_CONFIG_GLOBAL pnpm vitest run tests/timeline-facts.spec.ts`、
-`pnpm check`，以及生产实例 `superagent`（`http://127.0.0.1:3082`）的 `why` 与 curl 实测。
+实施阶段（提案未实施，以下命令尚未运行）：`env -u GIT_CONFIG_GLOBAL pnpm vitest run tests/timeline-facts.spec.ts`
+与生产实例 `superagent`（`http://127.0.0.1:3082`）的 `why` / curl 实测。
