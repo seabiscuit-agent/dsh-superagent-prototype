@@ -25,8 +25,14 @@ openspec/
         └── tasks.md               # 可勾选的实施清单
 ```
 
-当前进行中的变更：`local-dispatch-source` —— 主会话消息即候选、Apply 触发即派工、
-不引入 @ 与按钮、飞书降为可选通道。
+当前状态（以 `openspec list` 为准）：
+
+- 已归档能力：`local-dispatch-source`（`specs/local-dispatch-source/spec.md`）—— 主会话消息即候选、
+  Apply 触发即派工、不引入 @ 与按钮、飞书降为可选通道。
+- 已实施完成、尚未归档的变更：`ticket-agenda`（agenda 定时唤醒）、`host-owned-mechanics`
+  （结果/答复回执由宿主合成、派工前缀）、`resume-master-turn-after-restart`（重启后续跑被切断的主会话回合）。
+- 仍在进行的变更：`on-demand-routing`（主会话按需建单与撤订路由）、`orchestrator-consult`
+  （worker 先问 orchestrator、超授权再升级为人）。
 
 ## 流程：探索 → 提案 → 实施 → 归档
 

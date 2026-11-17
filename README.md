@@ -30,6 +30,14 @@ Read the numbered documents in order; each builds only on the ones before it.
 - [007 Architecture](docs/007-architecture.md)
 - [008 Cookbook](docs/008-cookbook.md): adding a Source
 
+## Specifications
+
+Changes to the orchestration layer are written down as
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) proposals under [openspec/](openspec/README.md)
+before they are coded: one directory per change holds the proposal, the requirement deltas, the
+design notes and a task list kept up to date while the work runs. [openspec/README.md](openspec/README.md)
+explains the flow and the writing rules; `openspec validate --all --strict` checks them.
+
 ## Development
 
 `pnpm check` runs the typecheck, the tests and the build.

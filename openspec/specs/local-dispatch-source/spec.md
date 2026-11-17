@@ -1,7 +1,11 @@
 # local-dispatch-source Specification
 
 ## Purpose
-TBD - created by archiving change local-dispatch-source. Update Purpose after archive.
+
+把主会话（orchestrator DSH Session）里所有者写的人消息接成 `local` Source 的显式候选，
+让「落盘 / Apply」确认复用既有的 `orchestrator_route kind accept` 原子建单并派工，
+全程不需要 @ 机器人、不需要新按钮，也不以飞书为前置条件。
+
 ## Requirements
 ### Requirement: 主会话人消息成为显式候选
 
