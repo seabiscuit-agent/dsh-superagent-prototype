@@ -68,6 +68,19 @@ it('forbids parenthetical asides in reply bodies and answers nothing new with si
   }
 })
 
+it('delivers a report as its conclusions plus the link, with quantities kept as the report states them', () => {
+  // 2026-11-17：主会话把一份 ready 报告只交付成“见 PR 链接”，worker 报告里的结论
+  //（含 owner 问的子代理答案）没有列出；worker 报告里未经测量的时长又被原样转述成事实。
+  expect(guides.replies).toContain('lists its conclusions')
+  expect(guides.replies).toContain('a report delivery that only gives the link is incomplete')
+  expect(guides.replies).toContain('a number the worker did not measure is not repeated as fact')
+  for (const role of ['orchestrator', 'worker'] as const) {
+    const prompt = composePrompt(defaultPrompts(), role)
+    expect(prompt).toContain('lists its conclusions')
+    expect(prompt).toContain('A report states a quantity only with the support behind it')
+  }
+})
+
 it('reads a prompt file whatever its line ends and blank lines, and names a missing or empty one', () => {
   const dir = mkdtempSync(join(tmpdir(), 'prompt-file-'))
   // promptFile resolves paths relative to prompts/; use a relative path to reach the temp dir.

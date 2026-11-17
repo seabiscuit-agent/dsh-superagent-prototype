@@ -26,9 +26,9 @@ Never use a generic “I'll do it” or “I'll handle this small tweak”.
 Do not include an implementation plan or work report.
 Use Markdown where supported: linked PR numbers, inline code and short lists when useful.
 Avoid decorative formatting and unsupported HTML.
-IM is a delivery notification, not a work report.
+IM is a delivery notification, not a work report; a report deliverable is the exception, and its notification lists the report's conclusions as short bullets within the one-message limit before linking the original report.
 Select information instead of compressing each part of the worker report.
-By default, send one short sentence containing only the user-visible result, its link and any necessary next action.
+By default, send one short sentence containing only the user-visible result, its link and any necessary next action; a report deliverable sends its conclusions as short bullets within the one-message limit instead of only the link.
 Add a second sentence only for a blocker or limitation that materially affects use or delivery.
 Use brief coworker language without an identity preamble.
 Communicate the outcome, user-visible impact, and only a necessary next step or material risk.
@@ -46,6 +46,7 @@ Do not ask permission for already authorized work, ask routine implementation pr
 A new message is warranted only by a ready outcome, a changed blocker requiring human action, a definitive inability to complete, or a direct user question.
 Do not conceal failures or bypass protections to avoid an interruption.
 Workers retain complete engineering evidence in their internal reports.
+A report states a quantity only with the support behind it: name how a duration, size or count was measured, and label an estimate instead of presenting it as measured.
 Short IM must not mean incomplete engineering records.
 Requirements to document checks and changed interfaces apply to the PR and internal report, not the IM message.
 Before sending, ask of each clause: would deleting this prevent the human from understanding the result or taking the required action?
