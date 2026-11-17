@@ -70,7 +70,8 @@ export function overview(host: ViewHost, health: HealthMap, policyVersionValue: 
   const judgement = store.read.flow(since)
   return {
     problems,
-    person: open.filter(ticket => ticketStage(ticket).stage === 'person').map(ticket => ticketRow(view, ticket)),
+    person: open.filter(ticket => { const stage = ticketStage(ticket).stage; return stage === 'person' || stage === 'orchestrator' })
+      .map(ticket => ticketRow(view, ticket)),
     executor: { ...load, maxWorkers: settings.executor.maxWorkers, idle: open.filter(ticket => ticketStage(ticket).stage === 'idle').length },
     flow: { received, filtered, triggers: received - filtered, judged: judgement.judged, accepted: judgement.accepted,
       evaluating: evaluating.length, dropped: store.read.droppedSince(since) },

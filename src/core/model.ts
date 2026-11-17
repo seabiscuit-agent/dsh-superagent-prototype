@@ -224,7 +224,7 @@ export interface Assignment {
   startedAt?: string
   endedAt?: string
   endedReason?: string
-  report?: { state: ReportState; summary: string; at: string }
+  report?: { state: ReportState; summary: string; at: string; questionId?: string }
   /** When Inputs last reached the worker; one at or after `report.at` means the worker has been busy with Inputs since that report. */
   deliveredAt?: string
   /**
@@ -259,6 +259,9 @@ export type TicketInput =
   | { id: string; kind: 'note'; text: string; at: string }
   /** A due wake the main Session scheduled earlier; `text` is the reason it gave. */
   | { id: string; kind: 'agenda'; text: string; at: string }
+  /** An answer to a question the worker asked; it reaches the worker unless the ticket ended. */
+  | { id: string; kind: 'answer'; questionId: string; text: string; basis?: string
+    answeredBy: 'orchestrator' | 'person'; at: string }
 
 /**
  * How a Policy change bears on a ticket: the rules it was accepted under that changed, with their instruction now, or no
@@ -275,8 +278,40 @@ export interface PolicyEffect {
 export type TicketEndBy = 'executor' | 'human'
 /** How a ticket ended: with its result, with its pull request merged or closed unmerged, with nothing to do, or stopped by a person. */
 export type TicketOutcome = 'completed' | 'merged' | 'closed' | 'dropped' | 'stopped'
-/** A question for a person; `triggerId` is the human message that raised it, whose conversation it goes back to. */
-export interface Attention { id: string; question: string; triggerId?: string }
+/**
+ * A question a worker asked: the main Session answers it (`to: 'orchestrator'`) or escalates it to a person (`to: 'person'`),
+ * and its answer returns to the worker as an Input. A Question is open until `resolution` says how it closed; `blocking` is
+ * true when the report that asked it was `blocked`, so automatic Inputs wait for the answer.
+ */
+export interface Question {
+  id: string
+  /** Stable name the worker chose; a later open question with the same key updates this one. */
+  key?: string
+  from: 'worker'
+  to: 'orchestrator' | 'person'
+  question: string
+  /** Two to five choices the worker offers, when it has them. */
+  options?: string[]
+  /** One of `options` the worker recommends. */
+  recommend?: string
+  blocking: boolean
+  /** Why the worker asks, in its own words; shown with the question. */
+  context?: string
+  /** The human message that raised a person's question, whose conversation it goes back to. */
+  triggerId?: string
+  /** The Assignment that asked it. */
+  assignmentId?: string
+  answer?: string
+  answeredBy?: 'orchestrator' | 'person'
+  answeredAt?: string
+  /** Why the answer was chosen, for an orchestrator's answer. */
+  basis?: string
+  /** Why the main Session escalated the question to a person. */
+  escalation?: string
+  resolution?: 'answered' | 'resolved' | 'withdrawn'
+  resolvedAt?: string
+  createdAt: string
+}
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
   id: string
@@ -287,8 +322,8 @@ export interface Ticket {
   channels: ChannelRef[]
   /** When, by whom, and how the ticket ended, with a person's or the host's reason beyond the outcome; an open ticket has none. */
   ended?: { at: string; by: TicketEndBy; outcome: TicketOutcome; reason?: string }
-  /** Open question for a person; cleared by the executor or when the ticket ends. */
-  attention?: Attention
+  /** Questions its worker asked; open ones when they have no `resolution`. */
+  questions?: Question[]
   assignments: Assignment[]
   inputs: TicketInput[]
   /** Inputs not yet handed to a running assignment. */
@@ -346,11 +381,33 @@ export function readUntil(ticket: Pick<Ticket, 'assignments'>, progress = true):
   const report = ticket.assignments.findLast(assignment => assignment.report && (progress || assignment.report.state !== 'progress'))?.report
   return [report?.at ?? '', ...ticket.assignments.map(assignment => assignment.idleAt ?? '')].reduce((a, b) => a > b ? a : b)
 }
+/** The questions of a ticket that are not closed yet. */
+export function openQuestions(ticket: Pick<Ticket, 'questions'>): Question[] {
+  return (ticket.questions ?? []).filter(question => question.resolution === undefined)
+}
+/** The oldest open blocking question, to `to` when given. */
+export function blockingQuestion(ticket: Pick<Ticket, 'questions'>, to?: Question['to']): Question | undefined {
+  return openQuestions(ticket).find(question => question.blocking && (to === undefined || question.to === to))
+}
 /**
- * Whether a ticket waits for a person: its latest Assignment reported blocked or failed, and no person's message reached it
- * since. A later report that is neither, a person's message, or a retry, which starts a new Assignment, lifts it.
+ * Whether a ticket waits for an answer: a blocking question is open, or its latest Assignment reported blocked or failed and
+ * no person's message reached it since (a worker may be blocked on something no question names). A later report, a person's
+ * message, or a retry lifts the report part.
+ */
+export function waitsForQuestion(ticket: Ticket): boolean {
+  if (blockingQuestion(ticket)) return true
+  return stalled(ticket)
+}
+/**
+ * Whether a ticket waits for a person: a blocking question is open for a person, or its latest Assignment reported blocked or
+ * failed and no person's message reached it since.
  */
 export function waitsForPerson(ticket: Ticket): boolean {
+  if (blockingQuestion(ticket, 'person')) return true
+  return stalled(ticket)
+}
+/** Whether a blocked or failed report still waits: no person's message reached the ticket since that report. */
+function stalled(ticket: Ticket): boolean {
   const report = latestAssignment(ticket)?.report
   if (report?.state !== 'blocked' && report?.state !== 'failed') return false
   return !ticket.inputs.some(input => input.kind === 'trigger' && input.human && !input.context && input.at > report.at)

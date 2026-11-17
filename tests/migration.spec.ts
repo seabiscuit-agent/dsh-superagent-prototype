@@ -8,6 +8,7 @@ import { KV } from '../src/kv.ts'
 import { basisOf, reasonsOf, withoutCopies } from '../src/app/migration.ts'
 import { Prompts, composePrompt, defaultPrompts } from '../src/app/prompts.ts'
 import { masterPrompt } from '../src/app/context.ts'
+import type { Ticket } from '../src/core/model.ts'
 
 let directory: string
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), 'orchestrator-migration-')) })
@@ -536,4 +537,18 @@ it('delivers the candidate of an Eval in progress at the upgrade again, so its d
   const effects = store.db.prepare("SELECT key, value FROM effect WHERE kind = 'assessment'").all().map(row => [row.key, JSON.parse(String(row.value))])
   expect(effects).toEqual([['e9', { triggerId: 'issue-9' }]])
   store.close()
+})
+
+it('reads a legacy Attention as one open person Question that keeps its id', () => {
+  const path = join(directory, 'db.sqlite')
+  const store = new Store(path)
+  store.tickets.save({ id: 't1', title: 'Fix', decisionId: 'd1', mandate: { strength: 'explicit' }, channels: [], assignments: [],
+    inputs: [], undelivered: [], createdAt: '1', updatedAt: '2', origin: { triggerId: 'tr1', triggerIds: ['tr1'] },
+    attention: { id: 'a1', question: 'Which?', triggerId: 'tr1' } } as unknown as Ticket)
+  store.close()
+  const again = new Store(path)
+  expect(again.tickets.get('t1')!.questions).toEqual([expect.objectContaining({ id: 'a1', from: 'worker', to: 'person',
+    blocking: true, question: 'Which?', triggerId: 'tr1' })])
+  expect(again.tickets.get('t1')).not.toHaveProperty('attention')
+  again.close()
 })

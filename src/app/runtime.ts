@@ -148,7 +148,9 @@ export class Runtime extends Service implements SourceHost {
         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
       const outbox = this.outbox = new Outbox({ store, effects, sources, commands, paused: () => this.paused(),
         // The local Source's conversation is the main session itself: render each of its receipts there as a notice row, deduplicated per receipt id.
-        renderLocal: (receipt, summary) => sessions.renderReceipt(receipt.id, receipt.text, summary) })
+        renderLocal: (receipt, summary) => sessions.renderReceipt(receipt.id, receipt.text, summary),
+        // A person's answer that went out closes the worker's question and reaches the worker as an Input.
+        answered: receipt => { if (receipt.questionId && receipt.ticketId) this.engine.personAnswered(receipt.ticketId, receipt.questionId, receipt.text) } })
       const { assessor, executor } = this
       const policy = () => settingsPolicy(store.settings(), sources)
       const engine = this.engine = new Engine({ repo: store, scope: sources, policy, assessor, executor,

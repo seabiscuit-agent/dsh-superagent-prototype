@@ -1,7 +1,7 @@
 /** The Engine's messages to Channels, each by the rule that allows it. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, liveTicket, ticketOutcome } from './model.ts'
+import { latestAssignment, liveTicket, openQuestions, ticketOutcome } from './model.ts'
 import type { ChannelRef, Ticket, Trigger } from './model.ts'
 import type { ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
@@ -13,7 +13,9 @@ import { EnginePart } from './part.ts'
  */
 export type ReplyRequest =
   | { purpose: 'acknowledgement'; ticketId: string; triggerId: string; text: string }
-  | { purpose: 'answer' | 'result' | 'attention'; ticketId?: string; triggerId?: string; question?: string; text: string }
+  | { purpose: 'answer' | 'result' | 'attention'; ticketId?: string; triggerId?: string; question?: string
+    /** The open person question this attention answers or points at; without it the text must match the question exactly. */
+    questionId?: string; text: string }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
 
@@ -72,18 +74,33 @@ export class Replies extends EnginePart {
       const ready = outcome === 'merged' || outcome === 'completed' || outcome === 'dropped' || reported
       if (!ticket || !ready) throw new UserError('notReady')
     }
-    const attention = request.purpose === 'attention' ? ticket?.attention : undefined
-    // Attention replies must match the ticket's currently open question text.
-    if (request.purpose === 'attention' && (!attention || attention.question !== request.question)) throw new UserError('notAttention')
+    const open = ticket ? openQuestions(ticket) : []
+    const attention = request.purpose === 'attention'
+      ? request.questionId ? open.find(question => question.id === request.questionId && question.to === 'person')
+        : open.find(question => question.to === 'person' && question.question === request.question)
+      : undefined
+    // Attention replies must match a currently open question for a person, by id or exactly by text.
+    if (request.purpose === 'attention' && (!attention || (request.question !== undefined && attention.question !== request.question))) {
+      throw new UserError('notAttention')
+    }
+    // An answer goes back to the open person question it answers: by id, by the human message that asked it, or the only one.
+    const people = open.filter(question => question.to === 'person')
+    const answering = request.purpose === 'answer'
+      ? request.questionId ? people.find(question => question.id === request.questionId)
+        : people.find(question => question.triggerId === trigger?.id) ?? (people.length === 1 ? people[0] : undefined)
+      : undefined
+    if (request.purpose === 'answer' && request.questionId && !answering) throw new UserError('notOpen')
     if (request.purpose === 'answer' && !trigger?.human) throw new UserError('notQuestion')
     const id = attention ? key('attention-reply', attention.id) : key('reply', trigger?.id ?? ticket?.id ?? '', request.text)
     const existing = this.options.outbox.status(id)
-    const ready = !ticket || !trigger || ticket.answers?.includes(trigger.id)
+    // A person answering the worker's question is not answering a question of their own, so it needs no take-up.
+    const ready = !ticket || !trigger || !!answering || ticket.answers?.includes(trigger.id)
     if (request.purpose === 'answer' && !ready && !existing) throw new UserError('noAnswer')
     const asker = attention?.triggerId ? this.repo.triggers.get(attention.triggerId) : undefined
     const channel = request.purpose === 'answer' ? trigger!.channel : asker?.channel ?? (ticket ? this.sourceChannel(ticket) : undefined)
     if (!channel) throw new UserError('noChannel')
-    this.options.outbox.send({ id, channel, text: request.text, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {} })
+    this.options.outbox.send({ id, channel, text: request.text, kind: 'reply', ...ticket ? { ticketId: ticket.id } : {},
+      ...answering ? { questionId: answering.id } : {} })
     if (request.purpose === 'answer' && ticket && trigger && ticket.answers?.includes(trigger.id)) {
       ticket.answers = ticket.answers.filter(item => item !== trigger.id)
       this.repo.tickets.save(ticket)

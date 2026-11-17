@@ -69,7 +69,9 @@ export interface Executor {
 }
 
 /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
-export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string }
+export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string
+  /** The worker's question this message answers: a successful send records the answer and returns it as an Input. */
+  questionId?: string }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */
@@ -100,6 +102,9 @@ export interface DomainEvents {
   'trigger.followup': { triggerId: string }
   /** A scheduled wake came due for a ticket that had ended or no longer exists, so it was dropped without resuming it. */
   'agenda.dropped': { ticketId: string; key: string; reason: string; at: string }
+  'question.answered': { ticketId: string; questionId: string; by: 'orchestrator' | 'person' }
+  'question.escalated': { ticketId: string; questionId: string; reason: string }
+  'question.resolved': { ticketId: string; questionId: string }
   'policy.changed': { from: string; to: string }
 }
 export type DomainEvent = { [K in keyof DomainEvents]: { type: K; at: string; data: DomainEvents[K] } }[keyof DomainEvents]

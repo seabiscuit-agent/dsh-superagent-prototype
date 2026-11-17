@@ -9,6 +9,7 @@ import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssess
 import { ticketCard } from '../cards.ts'
 import { agendaKey, type Effects } from '../effects.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
+import { attentionText } from '../render.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
 import type { Settings } from '../settings.ts'
@@ -20,7 +21,7 @@ const RoutingNoteSchema = z.string().trim()
   .describe(`Optional routing background or explicit human constraint, at most ${NOTE_WORDS} words. Never add implementation instructions or replace the original source.`)
 export interface MainToolsHost {
   readonly context: Context
-  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
+  readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note' | 'answerQuestion' | 'escalate'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
   /** Pending scheduled wakes: one row per ticket and name, replaced by a later schedule of the same name. */
   readonly effects: Pick<Effects, 'enqueue' | 'cancel'>
@@ -280,18 +281,58 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
         trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
         ticket_id: z.string().optional(),
         purpose: z.enum(['answer', 'result', 'attention']),
-        human_action: z.string().trim().min(1).optional().describe('Required for attention: the ticket\'s current attention question.'),
+        human_action: z.string().trim().min(1).optional().describe('For attention: the person question the message asks, matching its text.'),
+        question_id: z.string().optional().describe('The worker question this message points at (attention) or answers (answer).'),
         text: z.string().min(1).max(20000),
       }).strict(),
       execute: async (args, _signal, turn) => {
         const reply = host.engine.reply({ purpose: args.purpose, text: args.text, ...(args.trigger_id ? { triggerId: args.trigger_id } : {}),
-          ...(args.ticket_id ? { ticketId: args.ticket_id } : {}), ...(args.human_action ? { question: args.human_action } : {}) })
+          ...(args.ticket_id ? { ticketId: args.ticket_id } : {}), ...(args.human_action ? { question: args.human_action } : {}),
+          ...(args.question_id ? { questionId: args.question_id } : {}) })
         await host.sendReplies()
         const status = host.store.replyStatus(reply.id) ?? reply.status
         // The receipt is the owner-facing message: end the turn here so the model cannot append a duplicate or paraphrase of it.
         // A receipt still pending is not one the owner can see yet, so the turn continues and the model says where things stand.
         if (status === 'sent') turn.concludeTurn()
         return { status }
+      },
+    }),
+    tool({
+      name: 'orchestrator_answer',
+      description: 'Answer a worker question asked to the orchestrator when the ticket\'s existing authority and context settle it; give the basis you used. This records the answer and returns it to the worker, and sends nothing to a person.',
+      schema: z.object({
+        question_id: z.string().min(1).describe('The question id the worker_question relay carried.'),
+        answer: z.string().trim().min(1).max(2000),
+        basis: z.string().trim().min(1).max(500).describe('Why this answer follows from the ticket, its mandate or the policy.'),
+      }).strict(),
+      execute: async args => {
+        const { questionId, delivered } = host.engine.answerQuestion(args.question_id, args.answer, args.basis)
+        return { answered: true, delivered, question_id: questionId }
+      },
+    }),
+    tool({
+      name: 'orchestrator_escalate',
+      description: 'Move a worker question from the orchestrator to a person when the decision or resource is beyond the ticket\'s authority; the attention message goes to the person who raised it, or to the ticket\'s conversation.',
+      schema: z.object({
+        question_id: z.string().min(1).describe('The question id asked to the orchestrator.'),
+        reason: z.string().trim().min(1).max(500).describe('Why a person must decide.'),
+      }).strict(),
+      execute: async args => {
+        const result = host.engine.escalate(args.question_id, args.reason)
+        if (result.already) return { escalated: false, already: true, question_id: args.question_id }
+        const ticket = host.store.tickets.get(result.ticketId)
+        const question = ticket?.questions?.find(item => item.id === args.question_id)
+        if (!question) return { escalated: true, sent: false, question_id: args.question_id }
+        let status: string
+        try {
+          const reply = host.engine.reply({ purpose: 'attention', ticketId: result.ticketId, questionId: question.id, text: attentionText(question) })
+          if (reply.status !== 'sent') await host.sendReplies()
+          status = host.store.replyStatus(reply.id) ?? reply.status
+        } catch {
+          // The question stays with the person even when no channel can carry the message; the main Session can retry.
+          return { escalated: true, sent: false, question_id: args.question_id }
+        }
+        return { escalated: true, sent: status === 'sent', question_id: args.question_id, ...(status !== 'sent' ? { status } : {}) }
       },
     }),
     tool({

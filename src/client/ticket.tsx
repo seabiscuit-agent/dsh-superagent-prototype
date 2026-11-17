@@ -141,11 +141,12 @@ export function TicketPage({ id }: { id: string }) {
       <LabelValue label={t('ticketUpdatedLabel')} value={when(data.updatedAt, t('lang'))} />
     </div>
     {ended && <Hint>{ended}</Hint>}
-    {data.attention && <div className="dt-banner"><span className="dt-banner-label">{t('attentionPrefix')}</span><MarkdownLite
-      text={data.attention.question} />
-      {channel && <div className="dt-banner-actions">
+    {(data.questions ?? []).filter(question => question.blocking).map(question => <div className="dt-banner" key={question.id}>
+      <span className="dt-banner-label">{t(question.to === 'person' ? 'attentionPrefix' : 'orchestratorQuestionPrefix')}</span>
+      <MarkdownLite text={question.question} />
+      {question.to === 'person' && channel && <div className="dt-banner-actions">
         <ActionLink href={channel.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source', channel.source) })}</ActionLink>
-      </div>}</div>}
+      </div>}</div>)}
     {/* Ordinary progress stays in the Session/Channels; only a report that halted work (blocked/failed) is shown here. */}
     {data.actions.retry && data.summary && <p className={`dt-banner${failed ? ' dt-danger' : ''}${failedText ? ' dt-mono' : ''}`}>
       <span className="dt-banner-label">{t(failed ? 'failedPrefix' : 'blockedPrefix')}</span>{data.summary}

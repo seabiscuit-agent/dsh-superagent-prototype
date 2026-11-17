@@ -1,7 +1,7 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
 import { UserError } from './errors.ts'
-import { isoTime, liveTicket, waitsForPerson } from './model.ts'
-import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
+import { isoTime, liveTicket, waitsForQuestion } from './model.ts'
+import type { ChannelRef, Decision, PolicyEffect, Question, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Candidate, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
 import { Assignments, type WorkerReport } from './assignments.ts'
@@ -236,7 +236,7 @@ export class Engine {
         dropped()
         return 'ended'
       }
-      if (waitsForPerson(ticket)) return 'waiting'
+      if (waitsForQuestion(ticket)) return 'waiting'
       this.tickets.addInput(ticket, { id: `agenda:${ticketId}:${key}:${at}`, kind: 'agenda', text: reason.slice(0, 500), at })
       return 'delivered'
     })
@@ -259,6 +259,96 @@ export class Engine {
    * answer, or a question or answer that names a message that is not a person's or did not reach the ticket.
    */
   report(ticketId: string, report: WorkerReport): Ticket { return this.repo.atomic(() => this.assignments.report(ticketId, report)) }
+
+  // Questions
+
+  /**
+   * Answers a worker's question on the main Session's authority: records the answer and its basis, closes the question, and
+   * queues the answer as an Input for the worker. It sends nothing to any person's channel.
+   * @throws UserError for an unknown or closed question, a question asked to a person, or an empty answer or basis.
+   */
+  answerQuestion(questionId: string, answer: string, basis: string): { questionId: string; delivered: boolean } {
+    return this.repo.atomic(() => {
+      const { ticket, question } = this.openQuestion(questionId)
+      if (question.to !== 'orchestrator') throw new UserError('notOrchestratorQuestion')
+      if (!answer.trim()) throw new UserError('emptyAnswer')
+      if (!basis.trim()) throw new UserError('emptyBasis')
+      const at = this.now()
+      question.answer = answer.trim(); question.answeredBy = 'orchestrator'; question.answeredAt = at
+      question.basis = basis.trim(); question.resolution = 'answered'
+      const id = `question-answer:${question.id}`
+      this.tickets.addInput(ticket, { id, kind: 'answer', questionId: question.id, text: question.answer,
+        basis: question.basis, answeredBy: 'orchestrator', at })
+      this.options.emit?.({ type: 'question.answered', at, data: { ticketId: ticket.id, questionId: question.id, by: 'orchestrator' } })
+      return { questionId: question.id, delivered: liveTicket(ticket) }
+    })
+  }
+  /**
+   * Moves a worker's question from the main Session to a person, recording why; a question already for a person is left
+   * alone (`already`). Sending the attention is the caller's job, so a channel failure leaves the question for the person.
+   * @throws UserError for an unknown or closed question, or an empty reason.
+   */
+  escalate(questionId: string, reason: string): { questionId: string; ticketId: string; already: boolean } {
+    return this.repo.atomic(() => {
+      const { ticket, question } = this.openQuestion(questionId)
+      if (question.to === 'person') return { questionId: question.id, ticketId: ticket.id, already: true }
+      if (!reason.trim()) throw new UserError('emptyReason')
+      const at = this.now()
+      question.to = 'person'; question.escalation = reason.trim(); ticket.updatedAt = at
+      this.repo.tickets.save(ticket)
+      this.options.emit?.({ type: 'question.escalated', at, data: { ticketId: ticket.id, questionId: question.id, reason: reason.trim() } })
+      return { questionId: question.id, ticketId: ticket.id, already: false }
+    })
+  }
+  /**
+   * Records that a person's answer to a worker's question went out: closes the question and queues the answer as an Input.
+   * Idempotent, and silent for a question that is already closed or unknown (the outbox may replay a settled message).
+   */
+  personAnswered(ticketId: string, questionId: string, text: string): void {
+    this.repo.atomic(() => {
+      const ticket = this.repo.tickets.get(ticketId)
+      const question = ticket?.questions?.find(item => item.id === questionId)
+      if (!ticket || !question || question.resolution !== undefined) return
+      const at = this.now()
+      question.answer = text; question.answeredBy = 'person'; question.answeredAt = at; question.resolution = 'answered'
+      this.tickets.addInput(ticket, { id: `question-answer:${question.id}`, kind: 'answer', questionId: question.id, text, answeredBy: 'person', at })
+      this.options.emit?.({ type: 'question.answered', at, data: { ticketId: ticket.id, questionId: question.id, by: 'person' } })
+    })
+  }
+  /**
+   * Closes a question the worker no longer needs answered; only the Assignment that asked it may resolve it.
+   * @throws UserError for an unknown ticket or question, a closed or answered question, or another assignment's question.
+   */
+  resolveQuestion(ticketId: string, questionId: string, assignmentId: string): { questionId: string } {
+    return this.repo.atomic(() => {
+      const ticket = this.repo.tickets.get(ticketId)
+      if (!ticket) throw new UserError('unknownTicket')
+      const question = ticket.questions?.find(item => item.id === questionId)
+      if (!question) throw new UserError('unknownQuestion')
+      if (question.resolution === 'answered') throw new UserError('questionAnswered')
+      if (question.resolution !== undefined) throw new UserError('notOpen')
+      if (question.assignmentId !== assignmentId) throw new UserError('notAskingAssignment')
+      const at = this.now()
+      question.resolution = 'resolved'; question.resolvedAt = at; ticket.updatedAt = at
+      if (question.to === 'person') this.replies.withdrawAttention(question.id)
+      this.repo.tickets.save(ticket)
+      this.options.emit?.({ type: 'question.resolved', at, data: { ticketId: ticket.id, questionId: question.id } })
+      return { questionId: question.id }
+    })
+  }
+  /** The open question `questionId` and its ticket, refusing a missing or closed one. */
+  private openQuestion(questionId: string): { ticket: Ticket; question: Question } {
+    for (const ticket of this.repo.tickets.list()) {
+      const question = ticket.questions?.find(item => item.id === questionId)
+      if (!question) continue
+      if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+      if (question.resolution !== undefined) throw new UserError('notOpen')
+      return { ticket, question }
+    }
+    throw new UserError('unknownQuestion')
+  }
+  /** The Engine's clock, for the audit timestamps of a question's answer. */
+  private now(): string { return this.options.now?.() ?? new Date().toISOString() }
   /**
    * Handles an assignment that was running when the host stopped: restarts it with a recovery note unless its latest report is
    * `waiting`, `ready`, `blocked`, or `failed` and no Input reached its worker after that report, in which case it keeps its
@@ -282,11 +372,12 @@ export class Engine {
 /** What Sources ask and tell the Engine. */
 export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
 /** What the main Session asks of the Engine. */
-export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note' | 'agenda'>
+export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'
+  | 'agenda' | 'answerQuestion' | 'escalate'>
 /** What people ask of the Engine, through the panel or the main Session. */
 export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
 /** What Settings tells the Engine. */
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */
 export type EngineForExecutor = Pick<Engine, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed'
-  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply'>
+  | 'assignmentInterrupted' | 'report' | 'markUnrelated' | 'handback' | 'followForContext' | 'reply' | 'resolveQuestion'>

@@ -15,6 +15,8 @@ export interface OutboxHost {
   readonly commands: Commands
   /** Renders one receipt of the local Source into the main session's own conversation; a throw leaves the receipt waiting for its retry. */
   renderLocal(receipt: OutboundMessage, summary: string): Promise<void>
+  /** Called after a message with a `questionId` went out, to record the worker's answer. */
+  answered?(receipt: OutboundMessage): void
   paused(): boolean
 }
 
@@ -60,11 +62,13 @@ export class Outbox implements OutboxPort {
     if (receipt.channel.source === SOURCE) {
       await this.host.renderLocal(receipt, localSummary(receipt))
       store.receipts.settle(receipt, 'sent')
+      if (receipt.questionId) this.host.answered?.(receipt)
       return
     }
     // A permanently unreachable target (such as a recalled message or deleted Issue) settles as `channelGone` so its receipt prevents retries.
     const result = await sources.send(receipt, commands)
     if (result === 'waiting') throw new Later('The Source is not installed')
     store.receipts.settle(receipt, result === 'gone' ? 'channelGone' : 'sent')
+    if (result !== 'gone' && receipt.questionId) this.host.answered?.(receipt)
   }
 }

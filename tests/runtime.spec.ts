@@ -339,8 +339,8 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
   expect(await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'started' })).toMatchObject({ notification: 'internal_only' })
   expect(relays(runtime.masterId)).toEqual([])
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'need a decision', human_action: 'Desktop too?' })
-  expect(runtime.store.tickets.get(ticket.id)!.attention).toMatchObject({ question: 'Desktop too?' })
-  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_attention', ticket: { ticket_id: ticket.id, attention: { question: 'Desktop too?' } } })
+  expect(runtime.store.tickets.get(ticket.id)!.questions![0]).toMatchObject({ question: 'Desktop too?', to: 'person' })
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_attention', question: 'Desktop too?', ticket: { ticket_id: ticket.id, questions: [{ preview: 'Desktop too?' , to: 'person' }] } })
   conclusions.clear()
   await expect(runTool(runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'attention', human_action: 'other', text: 'x' })).rejects.toThrow('current attention question')
   expect(conclusions.has(`${runtime.masterId}:orchestrator_reply`)).toBe(false)
@@ -350,7 +350,7 @@ it('records worker reports, binds the task PR, ends the ticket on ready without 
   await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'pr open', pr_number: 42, human_action: null })
   const bound = runtime.store.tickets.get(ticket.id)!
   expect(pullOf(bound)).toBe(42)
-  expect(bound.attention).toBeUndefined()
+  expect(bound.questions!.every(question => question.resolution !== undefined)).toBe(true)
   expect(runtime.store.threads.get('github:42')?.subscriptions).toEqual([ticket.id])
   await runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'reviewed' })
   expect(runtime.store.tickets.get(ticket.id)!.ended).toBeUndefined()
@@ -969,9 +969,44 @@ it('checks a changed account CLI before saving it, restarts after the save, and 
   await expect(feishuSave(BOT())).rejects.toMatchObject({ code: 'feishuUserIdentity', values: { mode: 'off' } })
 })
 
+it('answers a worker question in the main Session, escalates one to a person, returns the person answer to the worker, and lets the asker resolve one', async () => {
+  const { ticket, sessionId } = await acceptedTicket()
+  deliveries.mockClear()
+  await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'need a decision', question_for: 'orchestrator',
+    question: 'Which layout?', options: ['a', 'b'], recommend: 'a', key: 'layout', context: 'both fit' })
+  expect(relays(runtime.masterId).at(-1)).toMatchObject({ kind: 'worker_question', question: 'Which layout?', options: ['a', 'b'], recommend: 'a' })
+  const asked = runtime.store.tickets.get(ticket.id)!.questions![0]!
+  expect(asked).toMatchObject({ to: 'orchestrator', blocking: true, key: 'layout' })
+  await expect(runTool(runtime.masterId, 'orchestrator_answer', { question_id: asked.id, answer: 'a', basis: '' })).rejects.toThrow('basis')
+  expect(await runTool(runtime.masterId, 'orchestrator_answer', { question_id: asked.id, answer: 'a', basis: 'only a fits' }))
+    .toEqual({ answered: true, delivered: true, question_id: asked.id })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === asked.id))
+    .toMatchObject({ resolution: 'answered', answeredBy: 'orchestrator', answer: 'a' })
+  expect(runtime.store.tickets.get(ticket.id)!.inputs.at(-1)).toMatchObject({ kind: 'answer', text: 'a', answeredBy: 'orchestrator' })
+  // A question can move from the main Session to a person, whose answer goes back to the worker after its send.
+  await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'need the owner', question: 'Which color?', question_for: 'orchestrator' })
+  const moved = runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.resolution === undefined)!
+  expect(await runTool(runtime.masterId, 'orchestrator_escalate', { question_id: moved.id, reason: 'the owner picks colors' }))
+    .toMatchObject({ escalated: true, sent: true })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === moved.id))
+    .toMatchObject({ to: 'person', escalation: 'the owner picks colors' })
+  const answer = feishu('2', '蓝色', { root_id: 'om_1' })
+  await receive(answer)
+  expect(await runTool(runtime.masterId, 'orchestrator_reply', { trigger_id: answer.id, question_id: moved.id, purpose: 'answer', text: '蓝色' }))
+    .toEqual({ status: 'sent' })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === moved.id))
+    .toMatchObject({ resolution: 'answered', answeredBy: 'person', answer: '蓝色' })
+  expect(runtime.store.tickets.get(ticket.id)!.inputs.at(-1)).toMatchObject({ kind: 'answer', text: '蓝色', answeredBy: 'person' })
+  // The asking assignment can close a question whose premise changed.
+  await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'still checking', question: 'Still needed?', question_for: 'orchestrator' })
+  const later = runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.resolution === undefined)!
+  expect(await runTool(sessionId, 'orchestrator_resolve', { question_id: later.id })).toEqual({ resolved: true, question_id: later.id })
+  expect(runtime.store.tickets.get(ticket.id)!.questions!.find(item => item.id === later.id)!.resolution).toBe('resolved')
+})
+
 it('lists Tickets that wait on a person with where to answer them, as the overview does', async () => {
   const { ticket, sessionId } = await acceptedTicket()
-  await runTool(sessionId, 'orchestrator_report', { state: 'progress', summary: 'need a decision', human_action: '按钮用哪种颜色？' })
+  await runTool(sessionId, 'orchestrator_report', { state: 'blocked', summary: 'need a decision', human_action: '按钮用哪种颜色？' })
   expect(ticketList(viewsOf(runtime), 'person', 0, 20).items).toEqual([expect.objectContaining({ id: ticket.id, stage: 'person', reply: expect.objectContaining({ source: 'feishu' }) })])
 })
 

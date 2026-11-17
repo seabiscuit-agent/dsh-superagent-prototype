@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { canRetry, ticketStage, type Assignment, type ReportState, type Ticket } from '../src/core/index.ts'
+import { canRetry, ticketStage, type Assignment, type Question, type ReportState, type Ticket } from '../src/core/index.ts'
 
 const assignment = (overrides: Partial<Assignment> = {}): Assignment => ({ id: 'a', state: 'running', createdAt: '', ...overrides })
 const reported = (state: ReportState, overrides: Partial<Assignment> = {}) => assignment({ report: { state, summary: '', at: '' }, ...overrides })
 const ticket = (overrides: Partial<Ticket> = {}): Ticket => ({ id: 't', title: 'x', decisionId: 'd', mandate: { strength: 'explicit', policyVersion: 'v', basis: { via: 'listed' }, actor: { source: 'feishu', id: 'ou' }, scope: '' },
   channels: [], assignments: [assignment()], inputs: [], undelivered: [], createdAt: '', updatedAt: '', origin: { triggerId: 'x', triggerIds: ['x'] }, ...overrides })
-const attention = { id: 'q', question: '?' }
+const question = (to: 'orchestrator' | 'person' = 'person', overrides: Partial<Question> = {}): Question => ({ id: 'q', from: 'worker', to, blocking: true, question: '?', createdAt: '', ...overrides })
+const asking = { questions: [question()] }
+const askingOrchestrator = { questions: [question('orchestrator')] }
 /** A person's message that reached the Ticket after its report. */
 const answered = { inputs: [{ id: 'i', kind: 'trigger' as const, triggerId: 'e', at: 'later', human: true as const }] }
 const reportedAt = (state: ReportState) => reported(state, { report: { state, summary: '', at: 'earlier' } })
@@ -15,10 +17,13 @@ const ended = { at: '', by: 'executor' as const, reason: 'closed', outcome: 'clo
 describe('ticketStage', () => {
   it.each([
     ['an undelivered Input', ticket({ delivery: { error: 'offline', at: '' } }), { stage: 'person', action: 'delivery' }],
-    ['delivery before answer and review', ticket({ delivery: { error: 'offline', at: '' }, attention, assignments: [reported('ready')] }), { stage: 'person', action: 'delivery' }],
-    ['an Attention', ticket({ attention }), { stage: 'person', action: 'answer' }],
-    ['answer before review', ticket({ attention, assignments: [reported('ready')] }), { stage: 'person', action: 'answer' }],
-    ['answer before a failure', ticket({ attention, assignments: [reported('failed')] }), { stage: 'person', action: 'answer' }],
+    ['delivery before answer and review', ticket({ delivery: { error: 'offline', at: '' }, ...asking, assignments: [reported('ready')] }), { stage: 'person', action: 'delivery' }],
+    ['a person Question', ticket(asking), { stage: 'person', action: 'answer' }],
+    ['an orchestrator Question', ticket(askingOrchestrator), { stage: 'orchestrator', action: 'answer' }],
+    ['a person Question before an orchestrator Question', ticket({ questions: [question('orchestrator'), question()] }), { stage: 'person', action: 'answer' }],
+    ['a non-blocking orchestrator Question', ticket({ questions: [question('orchestrator', { blocking: false })] }), { stage: 'working' }],
+    ['answer before review', ticket({ ...asking, assignments: [reported('ready')] }), { stage: 'person', action: 'answer' }],
+    ['answer before a failure', ticket({ ...asking, assignments: [reported('failed')] }), { stage: 'person', action: 'answer' }],
     ['a ready Report', ticket({ assignments: [reported('ready')] }), { stage: 'person', action: 'review' }],
     ['a ready Report of an ended Assignment', ticket({ assignments: [reported('ready', { state: 'ended' })] }), { stage: 'person', action: 'review' }],
     ['a blocked Report', ticket({ assignments: [reported('blocked')] }), { stage: 'person', action: 'blocked' }],
@@ -30,7 +35,7 @@ describe('ticketStage', () => {
     ['an ended Assignment', ticket({ assignments: [assignment({ state: 'ended' })] }), { stage: 'idle' }],
     ['a running Assignment', ticket(), { stage: 'working' }],
     ['a progress Report', ticket({ assignments: [reported('progress')] }), { stage: 'working' }],
-    ['an ended Ticket', ticket({ ended, attention, assignments: [reported('failed')] }), { stage: 'ended' }],
+    ['an ended Ticket', ticket({ ended, ...asking, assignments: [reported('failed')] }), { stage: 'ended' }],
   ])('%s', (_name, value, stage) => { expect(ticketStage(value)).toEqual(stage) })
 })
 
@@ -38,7 +43,7 @@ describe('canRetry', () => {
   it.each([
     ['a failed open Ticket', true, ticket({ assignments: [reported('failed')] })],
     ['a blocked open Ticket', true, ticket({ assignments: [reported('blocked')] })],
-    ['a failed Ticket that also awaits an answer', true, ticket({ attention, assignments: [reported('failed')] })],
+    ['a failed Ticket that also awaits an answer', true, ticket({ ...asking, assignments: [reported('failed')] })],
     ['a blocked Ticket whose Input is undelivered', true, ticket({ delivery: { error: 'offline', at: '' }, assignments: [reported('blocked')] })],
     ['a failed Ticket that ended', false, ticket({ ended, assignments: [reported('failed')] })],
     ['a Ticket retried already, whose new Assignment is pending', false, ticket({ assignments: [reported('failed', { state: 'ended' }), assignment({ state: 'pending' })] })],

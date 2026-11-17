@@ -12,7 +12,7 @@ import { messageId } from './delivery.ts'
 const SILENT = /^(?:NO[_-]?REPLY|END[_-]?OF[_-]?TURN|END[_-]?OF[_-]?RESPONSE|SILENT)$/i
 /** The internal payloads the panel's chat view drops, which likewise give the owner nothing. */
 const INTERNAL = [/[|｜]{2}\s*DSML\s*[|｜]{2}/u,
-  /"kind"\s*:\s*"(?:worker_report|worker\.report|follow_up|follow\.up|candidate|worker_attention|worker\.attention)"/u,
+  /"kind"\s*:\s*"(?:worker_report|worker\.report|follow_up|follow\.up|candidate|worker_attention|worker\.attention|worker_question|worker\.question)"/u,
   /\{\s*"ticket_id"\s*:/u]
 /** The message id of the receipt the host renders for a delivered reply; it is the owner-facing message of that reply. */
 const RECEIPT = 'dsh-superagent:local-receipt:'
@@ -83,7 +83,7 @@ export function inspectTurn(events: readonly SessionEvent[], turn: number): Turn
       else if (message.id === nudgeId) view.nudged = true
       else {
         const kind = relayKind(message)
-        if (kind === 'worker_report' || kind === 'worker_attention') view.owed = true
+        if (kind === 'worker_report' || kind === 'worker_attention' || kind === 'worker_question') view.owed = true
       }
     }
   }

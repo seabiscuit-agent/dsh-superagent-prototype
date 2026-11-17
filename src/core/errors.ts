@@ -47,6 +47,19 @@ export const USER_ERRORS = {
   invalidTime: ['refused', 'The time is not a parseable date and time with a UTC offset or Z: {at}'],
   invalidReason: ['refused', 'A scheduled wake needs a reason of 1 to 500 characters'],
   invalidKey: ['refused', 'A scheduled wake key must match [a-z0-9][a-z0-9_-]{0,63}'],
+  ambiguousQuestion: ['refused', 'Use either human_action or question, not both'],
+  invalidQuestionKey: ['refused', 'A question key must match [a-z0-9][a-z0-9_-]{0,63}'],
+  invalidOptions: ['refused', 'A question offers two to five distinct options'],
+  invalidRecommend: ['refused', 'The recommended option must be one of the question\'s options'],
+  unknownQuestion: ['missing', 'Unknown question'],
+  notOpen: ['refused', 'The question is already closed'],
+  notOrchestratorQuestion: ['refused', 'Only a question asked to the orchestrator can be answered by it'],
+  alreadyPerson: ['refused', 'The question already goes to a person'],
+  emptyAnswer: ['refused', 'An answer cannot be empty'],
+  emptyBasis: ['refused', 'An answer needs a basis'],
+  emptyReason: ['refused', 'Escalating a question needs a reason'],
+  questionAnswered: ['refused', 'The question is already answered and cannot be resolved'],
+  notAskingAssignment: ['refused', 'Only the assignment that asked the question can resolve it'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
 export type UserErrorCode = keyof typeof USER_ERRORS
 

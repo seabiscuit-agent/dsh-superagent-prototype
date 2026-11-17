@@ -1,6 +1,6 @@
 /** Formats background notices and steering relays delivered to the main Session via the effect queue. */
 import { randomUUID } from 'node:crypto'
-import { followupOwners, key, liveTicket, type DomainEvent, type Ticket, type WorkerReport } from '../core/index.ts'
+import { followupOwners, key, latestAssignment, liveTicket, type DomainEvent, type Ticket, type WorkerReport } from '../core/index.ts'
 import { triggerMessage } from '../executor/dsh.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { repliedTo } from './links.ts'
@@ -127,10 +127,16 @@ export function resultRelay(ticket: Ticket, state: string, text: string, replyTo
  * @returns The steering `Relay`, or `undefined` when the report is not relayed to the main Session.
  */
 export function reportRelay(ticket: Ticket, report: Pick<WorkerReport, 'state' | 'summary' | 'question' | 'answers'>): Relay | undefined {
-  const asked = report.question ? ticket.attention : undefined
+  const askedId = report.question ? latestAssignment(ticket)?.report?.questionId : undefined
+  const asked = askedId ? ticket.questions?.find(question => question.id === askedId && question.resolution === undefined) : undefined
   if (asked) {
-    return { id: `attention:${ticket.id}:${asked.id}`,
-      text: JSON.stringify({ kind: 'worker_attention', ticket: brief(ticket), state: report.state, read: `ticket/${ticket.id}/result` }) }
+    const detail = { state: report.state, question_id: asked.id, question: asked.question,
+      ...(asked.options ? { options: asked.options } : {}), ...(asked.recommend ? { recommend: asked.recommend } : {}),
+      blocking: asked.blocking, ...(asked.key ? { key: asked.key } : {}), ...(asked.context ? { context: asked.context } : {}),
+      read: `ticket/${ticket.id}/result` }
+    return asked.to === 'person'
+      ? { id: `attention:${ticket.id}:${asked.id}`, text: JSON.stringify({ kind: 'worker_attention', ticket: brief(ticket), ...detail }) }
+      : { id: `question:${ticket.id}:${asked.id}`, text: JSON.stringify({ kind: 'worker_question', ticket: brief(ticket), ...detail }) }
   }
   if (report.state === 'progress' && !report.answers) return undefined
   return resultRelay(ticket, report.state, report.summary, report.answers)
