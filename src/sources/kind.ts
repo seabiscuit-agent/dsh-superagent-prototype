@@ -96,6 +96,12 @@ export interface SourceKind<C extends Record<string, unknown> = Record<string, u
   health: string[]
   /** Listening rule for a trigger (or recorded Mandate basis) of this kind; kinds without `scope` listen to everything they produce and observe none of it. */
   scope?(input: { meta: Record<string, unknown> }, config: C): ScopeResult
+  /**
+   * How messages on this kind's threads reach tickets. `subscriptions` (the default) fans every listened message out to the
+   * tickets that subscribe to its thread. `on-demand` holds the message for the orchestrator: only a ticket the orchestrator
+   * attaches it to receives it, so discussion can be answered without dispatching work.
+   */
+  routing?: 'subscriptions' | 'on-demand'
   /** Outbound reply adapter; kinds without `channel` produce no replies or channel checks. */
   channel?: SourceChannel<C>
   /** Bounded context reader for assessments; assessments of a kind without `threadContext` read none. */

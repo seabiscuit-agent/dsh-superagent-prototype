@@ -60,6 +60,9 @@ export const localKind: SourceKind<LocalConfig> = {
   schema: LocalConfigSchema,
   fields: [],
   health: ['local'],
+  // Messages in the main session reach the orchestrator before any ticket: discussion is answered in conversation, and work
+  // starts or resumes a ticket only when the orchestrator routes it there.
+  routing: 'on-demand',
   channel: {
     send: async () => 'sent',
     link: (): ChannelLink => ({ url: '', label: { zh: '主会话', en: 'Main session' } }),

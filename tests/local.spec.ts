@@ -239,3 +239,54 @@ it('exposes the Apply-to-accept guidance on the prompts view', async () => {
     expect(dispatch.text).toContain('never expanding its scope')
   } finally { await host.stop() }
 })
+
+it('holds a local message for the orchestrator while a ticket is open, and attaches it back after the ticket ends', async () => {
+  const host = await localHost()
+  try {
+    const thread = `local:${host.runtime.masterId}`
+    const inputs = (ticketId: string) => host.runtime.store.tickets.get(ticketId)!.inputs
+      .flatMap(input => input.kind === 'trigger' ? [input.triggerId] : [])
+    const first = guiMessage('Fix the footer link')
+    emitMessage(host, host.runtime.masterId, first)
+    await host.runtime.idle()
+    const firstId = localTriggerId(first.id)
+    const accepted = await host.route({ kind: 'accept', trigger_id: firstId, title: 'Fix footer', worktree_name: 'fix-footer',
+      acknowledgement: '收到，修页脚。' })
+    await host.runtime.idle()
+    const ticketId = (accepted.ticket as { ticket_id: string }).ticket_id
+    expect(host.runtime.store.threads.get(thread)!.subscriptions).toContain(ticketId)
+    // Discussion while the ticket is open stays with the orchestrator and never reaches the worker as an Input.
+    const chat = guiMessage('这个页脚是不是也该用新字体？')
+    emitMessage(host, host.runtime.masterId, chat)
+    await host.runtime.idle()
+    const chatId = localTriggerId(chat.id)
+    expect(host.candidates()).toContain(chatId)
+    expect(inputs(ticketId)).toEqual([])
+    await host.route({ kind: 'ignore', trigger_id: chatId, reason: 'Discussion; no work requested.' })
+    // Ending the work leaves the on-demand thread without that subscription, silently.
+    await host.runTool(`worker-${ticketId}`, 'orchestrator_report', { state: 'ready', summary: 'Done.' })
+    expect(host.runtime.store.tickets.get(ticketId)!.ended).toMatchObject({ outcome: 'completed' })
+    expect(host.runtime.store.threads.get(thread)!.subscriptions).not.toContain(ticketId)
+    const summaries = host.agents.get(host.runtime.masterId)!.inject.mock.calls
+      .map(([injected]) => (injected.source as { summary?: string } | undefined)?.summary ?? '')
+    expect(summaries.some(summary => summary.includes('no longer follows thread'))).toBe(false)
+    // A later message that continues the work is attached back: the ended ticket resumes with it as an Input.
+    const more = guiMessage('把页脚年份改成 2027')
+    emitMessage(host, host.runtime.masterId, more)
+    await host.runtime.idle()
+    const moreId = localTriggerId(more.id)
+    expect(host.candidates()).toContain(moreId)
+    // The card still offers the ended ticket after its subscription was dropped, so it can be attached back.
+    const card = host.deliveries.mock.calls.map(([call]) => call).filter(call => call.sessionId === host.runtime.masterId)
+      .map(call => JSON.parse(call.text) as { kind?: string; related_tickets?: { ticket_id: string }[] })
+      .filter(item => item.kind === 'candidate').at(-1)!
+    expect(card.related_tickets?.map(item => item.ticket_id)).toContain(ticketId)
+    const attached = await host.route({ kind: 'attach', ticket_id: ticketId, trigger_id: moreId, note: 'Continues the footer work.' })
+    await host.runtime.idle()
+    expect(attached).toMatchObject({ ticket: expect.objectContaining({ ticket_id: ticketId }) })
+    const resumed = host.runtime.store.tickets.get(ticketId)!
+    expect(resumed.ended).toBeUndefined()
+    expect(inputs(ticketId)).toContain(moreId)
+    expect(host.runtime.store.threads.get(thread)!.subscriptions).toContain(ticketId)
+  } finally { await host.stop() }
+})

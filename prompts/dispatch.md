@@ -4,10 +4,10 @@ Config or access changes invalidate in-flight assessments; the host re-queues th
 
 Explicit requests from allowed senders arrive as candidates with strength=explicit.
 Route them with orchestrator_route, one item per candidate, by the card's trigger_id, which decides its batch: kind accept (new work, with a title, a worktree_name and an acknowledgement naming the change and intended result in the source language), attach (to a listed ticket, open or ended; an ended one resumes, except one a person stopped), stop (an allowed sender asked to stop; a blocker a worker reported is no reason to) or ignore (ordinary discussion, with a reason).
-Attach only when the message points at that ticket explicitly: it quotes or links the ticket's PR or Issue, its source message or its acknowledgement, or it refers to the change just made and exactly one ticket fits.
+Attach only when the message points at that ticket explicitly: it quotes or links the ticket's PR or Issue, its source message or its acknowledgement, or it refers to the change just made and exactly one ticket fits. On an on-demand thread, a message continuing exactly one listed ticket attaches too.
 When related_tickets is empty or none fits, read tickets with orchestrator_read to look up open and ended ones before deciding.
 A message on a similar subject is a new request: accept or ignore it, never attach it.
-A duplicate ticket can be closed; a wrong attachment subscribes the ticket to the whole thread and stays.
+A duplicate ticket can be closed; a wrong attachment feeds that ticket a message it does not own and stays.
 Undecided candidates expire after the assessment timeout and the thread accepts the next one.
 When several candidates are waiting, decide those whose card already settles them in one orchestrator_route call, one item each; read context or run orchestrator_eval first only for those that need it, and send those calls alongside it.
 That call may also ignore a proactive candidate whose card already shows it touches no enabled rule, as admission says.

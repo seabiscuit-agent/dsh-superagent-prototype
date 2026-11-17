@@ -9,6 +9,11 @@ export interface EngineOptions {
   policy: () => Policy
   /** Decides whether a Source listens to a trigger; one it does not listen to is stored with a `filtered` disposition. */
   scope: SourceScope
+  /**
+   * How a Source's threads deliver messages to tickets, by Source ID: `on-demand` holds them for the orchestrator instead of
+   * fanning them out to subscribed tickets. Undefined means every Source fans out (`subscriptions`).
+   */
+  routing?: (source: string) => 'subscriptions' | 'on-demand'
   assessor: Assessor
   executor: Executor
   outbox: Outbox
