@@ -7,7 +7,7 @@
 
 ## 2. Source kind 与配置面
 
-- [ ] 2.1 新建 `src/sources/schedule.ts`：`SOURCE = 'schedule'`、`ScheduleConfigSchema`（`jobs: JobRow[]`，`JobRow = {key, cron, timezone, title, text, enabled}`，key 正则 + 同配置唯一性 refine）
+- [ ] 2.1 新建 `src/sources/schedule.ts`：`SOURCE = 'schedule'`、`ScheduleConfigSchema`（`jobs: JobRow[]`，`JobRow = {key, cron, timezone, title, text, enabled}`，key 正则 + 同配置唯一性 refine）。**cron 与时区不在这里校验**（只要求非空字符串）：它们是逐行属性，放在 schema 里会让一行笔误禁用整个来源，见 spec 第 1 条的「校验分两层」
 - [ ] 2.2 `fields`：一个 `rows` 字段，列依次为 `key`（`text` + `pattern`）、`cron`（`text`）、`timezone`（`text`）、`title`（`text`）、`text`（`text`）、`enabled`（`select`，options 为 `true` / `false`）——`FieldSpec` 的 rows 列只支持 `text` 与 `select`
 - [ ] 2.3 `scope`：`meta.job` 命中配置里某个启用行时返回 `{listened: true, observed: true, row: job}`，否则 `{listened: true, observed: false}`——**`observed` 必须为真**，否则 `machineGate` 的第二道条件（`src/policy.ts:175`）会因为没有 `addressed` 而拒绝每一条 Trigger；`health: ['schedule']`
 - [ ] 2.4 `policy`：`schema`（`allowed` 默认空数组、`bots` 默认空数组，每字段带 default）；`rows(config)` 为每个启用行返回 `{id: key, label: title, note: "cron (timezone)", cells: {listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: true}}`
@@ -19,7 +19,7 @@
 - [ ] 3.2 `src/kv.ts` 新增 `KV.schedule = { cursor: family<{due: string, triggerId: string}, [job: string]>('schedule-cursor:') }`
 - [ ] 3.3 首次见到某行：游标初始化为「当前时刻之前最近的一档到期时刻」，不产生 Trigger
 - [ ] 3.4 到期处理：`trigger = {id: key('schedule', job, due), source, threads: [{source, id: job}], actor: {source, id: ''}, human: false, at: due, text, meta: {job, due, cron, timezone}}` → `ctx.receive(trigger)` → 在同一个 `ctx.atomic()` 里推进游标
-- [ ] 3.5 每行 parse/nextDue 失败时 `ctx.report('schedule', health('error','…', {job, error}))` 并跳过该行，不影响其它行
+- [ ] 3.5 每行 `parseCron` / 时区解析 / `nextDue` 失败时 `ctx.report('schedule', health('error', '<新 code>', {job, error}))` 并跳过该行，不影响其它行；健康项 detail 必须带出该行 `key`
 - [ ] 3.6 成功时 `ctx.report('schedule', {state: 'ready', detail: '<n> jobs; next <ISO>', at})`
 - [ ] 3.7 `apply()`：`ctx.effect(() => ctx.orchestrator.sources.register(kind))` + AbortController 包裹的 watch，`.catch(error => source.report('schedule', {state: 'error', detail: String(error)}))`
 

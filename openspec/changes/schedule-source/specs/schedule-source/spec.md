@@ -10,9 +10,17 @@
 
 The system SHALL 提供内置 Source kind `schedule`，其配置是一组任务行，每行恰好包含
 `key`、`cron`、`timezone`、`title`、`text`、`enabled` 六个字段；`key` 匹配 `^[a-z0-9][a-z0-9-]*$`
-且在同一配置内唯一，`cron` 是 5 段表达式（分 时 日 月 周），`timezone` 是 IANA 时区名，
-`title` / `text` 非空，`enabled` 缺省为 `true`。整个配置解析失败时该 Source 实例按既有
-`SourceRegistry.resolve()` 语义被置为 disabled，而不是让宿主崩溃。
+且在同一配置内唯一，`cron` 与 `timezone` 非空，`title` / `text` 非空，`enabled` 缺省为 `true`。
+
+校验分两层，MUST NOT 混同：
+
+- **schema 层**（`SourceKind.schema`）：字段缺失、`key` 格式或重复、文本为空。失败时整个实例按
+  既有 `SourceRegistry.resolve()` 语义被置为 disabled（`enabled: false`，config 回落 schema
+  默认值），面板显示该实例不可用；宿主不崩溃。
+- **行求值层**（watch 循环内）：`cron` 的 5 段语法与语义、`timezone` 是否为已知 IANA 名。失败
+  只让**该行**不触发，`schedule` 健康项变 `error` 并点名该行 key，其它合法行照常触发。
+
+分层的理由：cron 与时区是逐行属性，让一行的笔误停掉整个来源会让其它定时任务一起静默。
 
 #### Scenario: 保存一行每分钟任务
 
@@ -25,14 +33,15 @@ The system SHALL 提供内置 Source kind `schedule`，其配置是一组任务�
 
 - **GIVEN** 已有任务行 `key = "ci-sweep"`
 - **WHEN** 用户再保存一行 `key = "ci-sweep"`，或保存一行 `key = "CI Sweep"`（含大写与空格）
-- **THEN** 校验失败并给出该行的错误，原配置保持不变，`schedule` 不产生任何 Trigger
+- **THEN** schema 校验失败并给出该行的错误，原配置保持不变；若该失败配置已落盘，实例被置为
+  `enabled: false`，不产生任何 Trigger（这是 schema 层的整实例后果，与逐行的 cron 错误不同）
 
 #### Scenario: cron 或时区非法时该行不触发但有可见状态
 
-- **GIVEN** 一行 `cron = "61 * * * *"`（分钟越界）或 `timezone = "Mars/Olympus"`
+- **GIVEN** 一行 `cron = "61 * * * *"`（分钟越界）或 `timezone = "Mars/Olympus"`，另一行合法
 - **WHEN** 宿主启动并进入 watch 循环
-- **THEN** 该行不产生任何 Trigger，`schedule` 健康项为 `error` 且 detail 带出该行 `key`；
-  其它合法任务行照常触发
+- **THEN** 只有该行不产生 Trigger，`schedule` 健康项为 `error` 且 detail 带出该行 `key`；
+  合法行照常按自己的到期时刻触发
 
 ### Requirement: 按 cron 与时区解析到期时刻
 
@@ -57,8 +66,9 @@ The system SHALL 用 5 段 cron（分、时、日、月、周）与 IANA 时区�
 #### Scenario: 认识不到的语法被拒绝
 
 - **GIVEN** 一行 `cron = "0 0 9 * * *"`（6 段，含秒）或 `cron = "@daily"`
-- **WHEN** 配置被校验
-- **THEN** 校验失败并指出该行 `cron` 非法，该行不进入 watch 循环
+- **WHEN** watch 循环求值该行
+- **THEN** 该行被视为非法、不进入到期计算，健康项 `error` 点名该行；不静默按 5 段截断，也不
+  降级成其它语义
 
 ### Requirement: 到点产生一条 Trigger
 
