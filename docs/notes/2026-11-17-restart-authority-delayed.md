@@ -15,7 +15,9 @@
   的 restart/stop/start），在 `Sessions.workOnly()` 的 guard 里对 worker 及其 subagent 拒绝，
   文案要求 worker 改为上报。主会话 guard 不拦。
 - `src/app/restart-queue.ts`：`RestartQueue` 只保存一个待执行请求；`load().running > 0 ||
-  load().queued > 0` 时每 `RESTART_CHECK_MS = 5000` 轮询一次，空闲后执行且只执行一次。
+  load().queued > 0 || mainBusy()` 时每 `RESTART_CHECK_MS = 5000` 轮询一次，空闲后执行且只执行一次。
+  `mainBusy()` 读主会话 agent 的 `status === 'running'`：工具调用发生在主会话回合内，所以新请求
+  通常先挂起，等这一轮结束再重启，避免把正在进行的回合切断。
   执行前先清 pending（进程死掉也不会重放），apply 失败则恢复 pending 并重试；`cancel()` 撤回。
   请求只在内存里：进程重启本身就满足请求，插件重启则丢弃，由主会话重问。
 - `src/app/restart-panel.ts`：`restartViaPanel()` 先 `GET ?action=list` 找到自己的行，再让

@@ -2,16 +2,18 @@
 import { expect, it } from 'vitest'
 import { RESTART_CHECK_MS, RestartQueue, type RestartQueueHost } from '../src/app/restart-queue.ts'
 
-function harness(input: { running?: number; queued?: number; fail?: boolean } = {}) {
+function harness(input: { running?: number; queued?: number; fail?: boolean; main?: boolean } = {}) {
   let running = input.running ?? 0
   let queued = input.queued ?? 0
   let fail = input.fail ?? false
+  let main = input.main ?? false
   const applied: string[] = []
   const logged: string[] = []
   const timers = new Map<number, { run: () => void; ms: number }>()
   let nextTimer = 1
   const queue = new RestartQueue({
     load: () => ({ running, queued }),
+    mainBusy: () => main,
     apply: async pending => {
       if (fail) throw new Error('panel unavailable')
       applied.push(pending.reason)
@@ -32,19 +34,20 @@ function harness(input: { running?: number; queued?: number; fail?: boolean } = 
   }
   return { queue, applied, logged, timers, tick,
     load: (load: { running?: number; queued?: number }) => { running = load.running ?? running; queued = load.queued ?? queued },
+    mainRunning: (value: boolean) => { main = value },
     failing: (value: boolean) => { fail = value } }
 }
 
 it('restarts at once when no worker runs or waits', async () => {
   const h = harness()
-  expect(await h.queue.request({ reason: 'settings change' })).toEqual({ restarting: true, deferred: false, running: 0, queued: 0 })
+  expect(await h.queue.request({ reason: 'settings change' })).toEqual({ restarting: true, deferred: false, running: 0, queued: 0, main: false })
   expect(h.applied).toEqual(['settings change'])
   expect(h.timers.size).toBe(0)
 })
 
 it('waits while a worker runs, keeps its reason, and restarts once the worker finishes', async () => {
   const h = harness({ running: 1 })
-  expect(await h.queue.request({ reason: 'after the fix lands' })).toEqual({ restarting: false, deferred: true, running: 1, queued: 0, pending_since: 1_000 })
+  expect(await h.queue.request({ reason: 'after the fix lands' })).toEqual({ restarting: false, deferred: true, running: 1, queued: 0, main: false, pending_since: 1_000 })
   expect(h.applied).toEqual([])
   expect([...h.timers.values()].map(timer => timer.ms)).toEqual([RESTART_CHECK_MS])
   await h.tick()
@@ -67,7 +70,7 @@ it('waits while a ticket waits for a worker slot', async () => {
 it('keeps one pending request: a second ask changes nothing, and cancel withdraws it', async () => {
   const h = harness({ running: 1 })
   await h.queue.request({ reason: 'first' })
-  expect(await h.queue.request({ reason: 'second' })).toMatchObject({ deferred: true, already: true, running: 1 })
+  expect(await h.queue.request({ reason: 'second' })).toMatchObject({ deferred: true, already: true, running: 1, main: false })
   expect(h.timers.size).toBe(1)
   expect(h.queue.cancel()).toEqual({ cancelled: true })
   expect(h.timers.size).toBe(0)
@@ -96,14 +99,26 @@ it('does not start a second restart while one is in flight', async () => {
   const applied: string[] = []
   const queue = new RestartQueue({
     load: () => ({ running: 0, queued: 0 }),
+    mainBusy: () => false,
     apply: async pending => { applied.push(pending.reason); await new Promise<void>(resolve => { release = resolve }) },
     schedule: () => () => {},
     now: () => 1,
     log: () => {},
   } satisfies RestartQueueHost)
   const first = queue.request({ reason: 'first' })
-  expect(await queue.request({ reason: 'second' })).toEqual({ restarting: false, deferred: false, already: true, running: 0, queued: 0 })
+  expect(await queue.request({ reason: 'second' })).toEqual({ restarting: false, deferred: false, already: true, running: 0, queued: 0, main: false })
   release()
-  expect(await first).toEqual({ restarting: true, deferred: false, running: 0, queued: 0 })
+  expect(await first).toEqual({ restarting: true, deferred: false, running: 0, queued: 0, main: false })
   expect(applied).toEqual(['first'])
+})
+
+it("waits for the main Session's own turn to end before it restarts", async () => {
+  const h = harness({ main: true })
+  expect(await h.queue.request({ reason: 'after this turn' })).toMatchObject({ restarting: false, deferred: true, main: true })
+  expect(h.applied).toEqual([])
+  await h.tick()
+  expect(h.applied).toEqual([])
+  h.mainRunning(false)
+  await h.tick()
+  expect(h.applied).toEqual(['after this turn'])
 })
