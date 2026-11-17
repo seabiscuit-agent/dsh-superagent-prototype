@@ -46,10 +46,11 @@ export class Assignments extends EnginePart {
     const assignment = ticket.assignments.find(item => item.id === assignmentId)
     if (!assignment || assignment.state === 'ended') return
     assignment.state = 'running'; assignment.startedAt ??= this.now()
-    ticket.updatedAt = this.now()
+    const at = this.now()
+    ticket.updatedAt = at
     this.repo.tickets.save(ticket)
     if (liveTicket(ticket) && ticket.undelivered.length) this.options.executor.deliver(ticket, assignment)
-    this.emit('assignment.started', { ticketId, assignmentId })
+    this.remember('assignment.started', { ticketId, assignmentId }, at, ticketId)
   }
   /**
    * Marks `inputIds` delivered on the ticket's running assignment and clears any prior `delivery` failure; ignored if no
@@ -132,13 +133,17 @@ export class Assignments extends EnginePart {
     const at = this.now()
     const questions = ticket.questions ?? []
     const open = questions.filter(question => question.resolution === undefined)
+    // Withdrawals are recorded after the report, so a report that settles its own questions still reads first.
+    const withdrawn: Question[] = []
+    const withdraw = (question: Question): void => {
+      question.resolution = 'withdrawn'; question.resolvedAt = at
+      withdrawn.push(question)
+      if (question.to === 'person') this.replies.withdrawAttention(question.id)
+    }
     let asked: Question | undefined
     if (report.question === null) {
       // Clearing withdraws this assignment's open questions, and any unsent attention for them.
-      for (const question of open.filter(item => item.assignmentId === assignment.id)) {
-        question.resolution = 'withdrawn'; question.resolvedAt = at
-        if (question.to === 'person') this.replies.withdrawAttention(question.id)
-      }
+      for (const question of open.filter(item => item.assignmentId === assignment.id)) withdraw(question)
     } else if (report.question !== undefined) {
       const existing = report.questionKey ? open.find(question => question.key === report.questionKey) : undefined
       if (existing) {
@@ -163,13 +168,12 @@ export class Assignments extends EnginePart {
     }
     // A ready result closes the questions of the assignment that asked them: nothing is left for a person to answer.
     if (report.state === 'ready' && report.question === undefined) {
-      for (const question of open.filter(item => item.assignmentId === assignment.id)) {
-        question.resolution = 'withdrawn'; question.resolvedAt = at
-        if (question.to === 'person') this.replies.withdrawAttention(question.id)
-      }
+      for (const question of open.filter(item => item.assignmentId === assignment.id)) withdraw(question)
     }
     if (questions.length) ticket.questions = questions
     assignment.report = { state: report.state, summary: report.summary, at, ...(asked ? { questionId: asked.id } : {}) }
+    this.fact('report.recorded', { state: report.state, summary: report.summary, ...(asked ? { questionId: asked.id } : {}) }, at, ticketId)
+    for (const question of withdrawn) this.fact('question.withdrawn', { ticketId, questionId: question.id, by: 'worker' }, at, ticketId)
     ticket.updatedAt = at
     if (report.answers && !ticket.answers?.includes(report.answers)) ticket.answers = [...ticket.answers ?? [], report.answers]
     if (report.answers) this.takeUp(ticketId, report.answers)

@@ -31,9 +31,10 @@ openspec/
   Apply 触发即派工、不引入 @ 与按钮、飞书降为可选通道。
 - 已实施完成、尚未归档的变更：`ticket-agenda`（agenda 定时唤醒）、`host-owned-mechanics`
   （结果/答复回执由宿主合成、派工前缀）、`resume-master-turn-after-restart`（重启后续跑被切断的主会话回合）。
+- 已实施完成、尚未归档的变更：`ticket-timeline`（工单事实链：面板折叠时间线、`why` 命令、
+  `ticket/<id>/timeline` 读取资源，旧工单按需回填并标 `derived`；schema 12 只建 `fact` 表）。
 - 仍在进行的变更：`on-demand-routing`（主会话按需建单与撤订路由）、`orchestrator-consult`
-  （worker 先问 orchestrator、超授权再升级为人）、`ticket-timeline`（工单事实链：面板折叠
-  时间线、`why` 命令、`ticket/<id>/timeline` 读取资源，旧工单按需回填并标 `derived`）。
+  （worker 先问 orchestrator、超授权再升级为人）。
 
 ## 流程：探索 → 提案 → 实施 → 归档
 

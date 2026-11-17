@@ -1,7 +1,12 @@
 /** Read-only Store queries for views, tools, and Source polling. */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import type { Decision, Thread, Trigger } from '../core/index.ts'
+import type { Decision, Fact, Thread, Trigger } from '../core/index.ts'
 import type { Dropped, Receipt, TimelinePlace } from './store.ts'
+
+/** Projects a `fact` row onto `Fact`: the four columns a timeline reads, with `data` parsed. */
+const factRow = (row: Record<string, unknown>): Fact => ({ ticket: row.ticket === null ? null : String(row.ticket),
+  at: row.at === null ? null : String(row.at), type: String(row.type) as Fact['type'],
+  data: JSON.parse(String(row.data)) as Fact['data'], origin: String(row.origin) as Fact['origin'] })
 
 export function storeReads(db: DatabaseSync) {
   const values = <T>(sql: string, ...parameters: SQLInputValue[]): T[] => db.prepare(sql).all(...parameters).map(row => JSON.parse(String(row.value)) as T)
@@ -73,6 +78,12 @@ export function storeReads(db: DatabaseSync) {
   droppedReplies: (limit = 20): Dropped[] =>
     values('SELECT value FROM outbox WHERE dropped IS NOT NULL ORDER BY dropped DESC LIMIT ?', limit),
   droppedSince: (since: string): number => Number(db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE dropped >= ?').get(since)?.n ?? 0),
+  /** One Ticket's Facts, oldest first, with the newest `limit` kept when there are more. */
+  facts: (ticket: string, limit = 200): { facts: Fact[]; truncated: boolean } => {
+    const rows = db.prepare(`SELECT ticket, at, type, data, origin FROM fact INDEXED BY fact_ticket_at WHERE ticket = ?
+      ORDER BY at DESC, id DESC LIMIT ?`).all(ticket, limit + 1)
+    return { facts: rows.slice(0, limit).map(factRow).reverse(), truncated: rows.length > limit }
+  },
   subscribedThreads: (source?: string): Thread[] => source
     ? values('SELECT value FROM thread WHERE subscribed = ? ORDER BY rowid', source)
     // Force the partial index so SQLite does not scan the entire table in rowid order.

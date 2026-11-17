@@ -1,6 +1,6 @@
 /** Ticket detail page: stage and actions, Mandate details, undelivered/delivered Inputs, subscribed Threads, and Assignments. */
 import { useState, type ReactNode } from 'react'
-import { ApiError, usePoll, type TicketPageView } from './api.ts'
+import { ApiError, usePoll, type TicketPageView, type TicketTimelineView } from './api.ts'
 import { DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
@@ -37,11 +37,41 @@ function InputList({ inputs }: { inputs: Input[] }) {
     earlier={run.earlier.map(shown)} />)}</ul>
 }
 
-function Details({ icon, title, open = false, children }: { icon: IconName; title: ReactNode; open?: boolean; children: ReactNode }) {
+function Details({ icon, title, open = false, onOpen, children }: {
+  icon: IconName; title: ReactNode; open?: boolean; onOpen?: () => void; children: ReactNode
+}) {
   const [shown, setShown] = useState(open)
-  return <DisclosureRow icon={<Icon name={icon} />} title={title} open={shown} onToggle={() => setShown(!shown)}>
+  return <DisclosureRow icon={<Icon name={icon} />} title={title} open={shown} onToggle={() => {
+    setShown(!shown)
+    if (!shown) onOpen?.()
+  }}>
     <div className="dt-disclosure-body">{children}</div>
   </DisclosureRow>
+}
+type TimelineFact = TicketTimelineView['facts'][number]
+/**
+ * One Ticket's timeline, as the host words it.
+ * The rows come with the ticket page (`GET tickets/:id/timeline`) only once this disclosure is opened: a collapsed timeline
+ * costs the panel nothing on the poll that redraws the page, which matters because most tickets are read for their stage.
+ */
+function Timeline({ id }: { id: string }) {
+  const { t, call } = usePanel()
+  const [asked, setAsked] = useState(false)
+  const { data, error } = usePoll(() => asked ? call('GET tickets/:id/timeline', { id }) : Promise.resolve(undefined), [id, asked])
+  const shown = (fact: TimelineFact) => <li key={`${fact.type}-${fact.at}-${fact.summary}`} className="dt-row">
+    <div className="dt-row-main">
+      <div className="dt-row-title">{fact.summary}</div>
+      <div className="dt-row-meta"><span>{fact.type}</span>{fact.origin === 'derived' && <span>{t('timelineDerived')}</span>}
+        <span>{fact.at ? <When at={fact.at} /> : t('timelineNoTime')}</span></div>
+    </div>
+  </li>
+  return <Details icon="clock" title={t('ticketTimeline')} onOpen={() => setAsked(true)}>
+    <LoadState error={error} loading={asked && !data} />
+    {data && (data.facts.length
+      ? <><ul className="dt-list">{data.facts.map(shown)}</ul>
+        {data.truncated && <Hint>{t('timelineTruncated', { count: String(data.facts.length) })}</Hint>}</>
+      : <Hint>{t('timelineEmpty')}</Hint>)}
+  </Details>
 }
 function Assignments({ ticket }: { ticket: TicketPageView }) {
   const { t } = usePanel()
@@ -167,6 +197,7 @@ export function TicketPage({ id }: { id: string }) {
       {/* A single Assignment adds nothing beyond the status line; list Assignments only once work has been resumed or handed over. */}
       {data.assignments.length > 1 && <Details icon="queue" title={`${t('term.assignment')} · ${data.assignments.length}`} open><Assignments
         ticket={data} /></Details>}
+      <Timeline id={data.id} />
       {data.environment.length > 0 && <Details icon="settings" title={t('term.environment')}>
         <table className="dt-table"><tbody>{data.environment.map(variable => <tr key={variable.key} title={localized(t,
           variable.description)}>

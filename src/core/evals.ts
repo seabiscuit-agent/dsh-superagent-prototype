@@ -80,7 +80,7 @@ export class Evals extends EnginePart {
       const followups = thread.pending.filter(delivered)
       thread.pending = thread.pending.filter(id => !followups.includes(id))
       this.repo.threads.save(thread)
-      for (const triggerId of followups) this.emit('trigger.followup', { triggerId })
+      for (const triggerId of followups) this.remember('trigger.followup', { triggerId }, at)
       if (!thread.pending.length) return
     }
     // Triggers that already originated a ticket cannot lend authority to a new evaluation or spawn a duplicate ticket.
@@ -114,7 +114,7 @@ export class Evals extends EnginePart {
     for (const trigger of triggers) {
       this.repo.triggers.saveDisposition(trigger.id, { ...(this.repo.triggers.disposition(trigger.id) ?? { fanout: [], at }), evalId })
     }
-    this.emit('eval.started', { evalId, threadKey: thread.key, triggerIds: thread.evaluating.triggerIds, strength: strongest.strength })
+    this.remember('eval.started', { evalId, threadKey: thread.key, triggerIds: thread.evaluating.triggerIds, strength: strongest.strength }, at)
     this.options.assessor.request(this.candidateOf(thread))
   }
   /** The candidate of the Eval that holds `triggerId`, or undefined while no Eval holds it. */
@@ -159,8 +159,9 @@ export class Evals extends EnginePart {
    * @throws UserError when the Trigger is unknown.
    */
   reevaluate(triggerId: string): boolean {
+    const at = this.now()
     if (!this.requeue(triggerId)) return false
-    this.emit('trigger.requeued', { triggerId })
+    this.remember('trigger.requeued', { triggerId }, at)
     return true
   }
   /** Queue a Trigger for a fresh Eval on its primary Thread; false while an Eval holds it. */
@@ -216,8 +217,9 @@ export class Evals extends EnginePart {
   }
   /** Start the Evals in progress again under the new Policy version, and say that it changed. */
   policyChanged(from: string, to: string): void {
+    const at = this.now()
     for (const thread of this.repo.threads.active()) if (thread.evaluating) this.reassess(thread, { code: 'policyChanged' })
-    this.emit('policy.changed', { from, to })
+    this.remember('policy.changed', { from, to }, at)
   }
   /** End a Thread's Eval as unavailable for `reason` and queue its Triggers, except `without`, for a new Eval ahead of the others. */
   private reassess(thread: Thread, reason: Reason, without: string[] = []): Decision {
@@ -334,7 +336,7 @@ export class Evals extends EnginePart {
       const disposition = this.repo.triggers.disposition(id) ?? { fanout: [], at }
       this.repo.triggers.saveDisposition(id, { ...disposition, evalId: evaluation.id, decisionId: decision.id })
     }
-    this.emit('decision.recorded', { decisionId: decision.id, kind: decision.kind, threadKey: thread.key })
+    this.remember('decision.recorded', { decisionId: decision.id, kind: decision.kind, threadKey: thread.key }, at)
     return decision
   }
 }

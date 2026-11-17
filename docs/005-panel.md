@@ -31,6 +31,8 @@ A human follow-up still owned by an Executor is marked **Delivered to Ticket**, 
 
 Ticket details show the originating Trigger, Decision and reason, scope and Policy version. Assignments and secondary details are folded below the immediate actions. **Retry** is available for failed Input delivery or a Ticket waiting for a person after a blocked or failed Report. Ended Tickets show outcomes such as **Pull request merged** or **Stopped by a person**.
 
+**Timeline** (时间线) is one more folded row in Ticket details, folded by default. Opening it lists the Ticket's Facts oldest first, one line each: the time, the type and a one-sentence summary. A Fact with no recorded time shows **No time** (无时刻) rather than a guessed one, and a row a backfill derived is marked **derived** (推导). A Ticket with no Facts shows **No Facts recorded** (未记录事实) instead of hiding the row. The folded row asks for nothing and changes nothing else on the page; the same chain reads from `orchestrator_read ticket/<id>/timeline` and `scripts/dsh-superagent why <id>`.
+
 ## Settings groups
 
 - **Sources:** one card per Source with its switch, fields and verified account facts. GitHub also offers receive-all switches for new Issues, pull requests, comments and default-branch CI. Polling and read limits are under Advanced.

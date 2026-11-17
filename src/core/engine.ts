@@ -2,7 +2,7 @@
 import { UserError } from './errors.ts'
 import { isoTime, liveTicket, waitsForQuestion } from './model.ts'
 import type { ChannelRef, Decision, PolicyEffect, Question, ThreadRef, Ticket, Trigger } from './model.ts'
-import type { Candidate, Repositories } from './ports.ts'
+import type { Candidate, DomainEvent, DomainEvents, FactData, FactType, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
 import { Assignments, type WorkerReport } from './assignments.ts'
 import { Evals, type Outcome } from './evals.ts'
@@ -50,7 +50,11 @@ export class Engine {
   }
   /** Records how a local command prefix was dispatched, for observability; it neither changes a ticket nor carries its text. */
   signalFastPath(triggerId: string, result: 'accepted' | 'fallback' | 'discussion', ticketId?: string): void {
-    this.options.emit?.({ type: 'dispatch.fast_path', at: this.now(), data: { triggerId, result, ...ticketId ? { ticketId } : {} } })
+    // It changes no business row, yet its Fact still needs a transaction of its own to land atomically with the event.
+    this.repo.atomic(() => {
+      const at = this.now()
+      this.record('dispatch.fast_path', { triggerId, result, ...ticketId ? { ticketId } : {} }, at, ticketId ?? null)
+    })
   }
   /**
    * A Source's request to make an open ticket follow one of its Threads, such as a pull request's, `own` when the ticket
@@ -231,7 +235,7 @@ export class Engine {
    * and one that ended or no longer exists drops it (`ended` or `missing`) without resuming the ticket.
    */
   agenda(ticketId: string, key: string, reason: string, at: string): 'delivered' | 'waiting' | 'ended' | 'missing' {
-    const dropped = () => this.options.emit?.({ type: 'agenda.dropped', at: this.options.now?.() ?? new Date().toISOString(), data: { ticketId, key, reason, at } })
+    const dropped = () => this.record('agenda.dropped', { ticketId, key, reason, at }, this.options.now?.() ?? new Date().toISOString(), ticketId)
     return this.repo.atomic(() => {
       const ticket = this.repo.tickets.get(ticketId)
       if (!ticket) {
@@ -285,7 +289,7 @@ export class Engine {
       const id = `question-answer:${question.id}`
       this.tickets.addInput(ticket, { id, kind: 'answer', questionId: question.id, text: question.answer,
         basis: question.basis, answeredBy: 'orchestrator', at })
-      this.options.emit?.({ type: 'question.answered', at, data: { ticketId: ticket.id, questionId: question.id, by: 'orchestrator' } })
+      this.record('question.answered', { ticketId: ticket.id, questionId: question.id, by: 'orchestrator' }, at, ticket.id)
       return { questionId: question.id, delivered: liveTicket(ticket) }
     })
   }
@@ -302,7 +306,7 @@ export class Engine {
       const at = this.now()
       question.to = 'person'; question.escalation = reason.trim(); ticket.updatedAt = at
       this.repo.tickets.save(ticket)
-      this.options.emit?.({ type: 'question.escalated', at, data: { ticketId: ticket.id, questionId: question.id, reason: reason.trim() } })
+      this.record('question.escalated', { ticketId: ticket.id, questionId: question.id, reason: reason.trim() }, at, ticket.id)
       return { questionId: question.id, ticketId: ticket.id, already: false }
     })
   }
@@ -318,7 +322,7 @@ export class Engine {
       const at = this.now()
       question.answer = text; question.answeredBy = 'person'; question.answeredAt = at; question.resolution = 'answered'
       this.tickets.addInput(ticket, { id: `question-answer:${question.id}`, kind: 'answer', questionId: question.id, text, answeredBy: 'person', at })
-      this.options.emit?.({ type: 'question.answered', at, data: { ticketId: ticket.id, questionId: question.id, by: 'person' } })
+      this.record('question.answered', { ticketId: ticket.id, questionId: question.id, by: 'person' }, at, ticket.id)
     })
   }
   /**
@@ -338,7 +342,7 @@ export class Engine {
       question.resolution = 'resolved'; question.resolvedAt = at; ticket.updatedAt = at
       if (question.to === 'person') this.replies.withdrawAttention(question.id)
       this.repo.tickets.save(ticket)
-      this.options.emit?.({ type: 'question.resolved', at, data: { ticketId: ticket.id, questionId: question.id } })
+      this.record('question.resolved', { ticketId: ticket.id, questionId: question.id }, at, ticket.id)
       return { questionId: question.id }
     })
   }
@@ -355,6 +359,15 @@ export class Engine {
   }
   /** The Engine's clock, for the audit timestamps of a question's answer. */
   private now(): string { return this.options.now?.() ?? new Date().toISOString() }
+  /** Appends one Fact in the transaction of the write it describes, for the moments the Engine itself records. */
+  private fact(type: FactType, data: FactData, at: string | null, ticket: string | null = null): void {
+    this.repo.facts.append({ ticket, at, type, data, origin: 'recorded' })
+  }
+  /** Records a moment both ways, at the same time: the Fact the timeline keeps and the Domain event the host announces. */
+  private record<K extends keyof DomainEvents>(type: K, data: DomainEvents[K], at: string, ticket: string | null = null): void {
+    this.fact(type, data, at, ticket)
+    this.options.emit?.({ type, at, data } as DomainEvent)
+  }
   /**
    * Handles an assignment that was running when the host stopped: restarts it with a recovery note unless its latest report is
    * `waiting`, `ready`, `blocked`, or `failed` and no Input reached its worker after that report, in which case it keeps its

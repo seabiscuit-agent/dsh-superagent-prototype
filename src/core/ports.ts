@@ -71,7 +71,9 @@ export interface Executor {
 /** A message for a Channel; `ticketId` names the Ticket it is for, when there is one. */
 export interface OutboundMessage { id: string; channel: ChannelRef; text: string; kind: 'acknowledgement' | 'reply' | 'notice'; ticketId?: string
   /** The worker's question this message answers: a successful send records the answer and returns it as an Input. */
-  questionId?: string }
+  questionId?: string
+  /** When the message was queued; messages queued before this existed keep it absent, and their timeline row has no time. */
+  queuedAt?: string }
 /** A queued message waits (`pending`), went out (`sent`), or was dropped because its conversation can never receive it (`dropped`). */
 export type ReplyStatus = 'pending' | 'sent' | 'dropped'
 /** The messages queued for Channels; the Engine queues them inside its commands, and a sender delivers them later. */
@@ -107,9 +109,29 @@ export interface DomainEvents {
   'question.answered': { ticketId: string; questionId: string; by: 'orchestrator' | 'person' }
   'question.escalated': { ticketId: string; questionId: string; reason: string }
   'question.resolved': { ticketId: string; questionId: string }
+  /** A Question closed without an answer: withdrawn by the worker that asked it, or by the Ticket ending. */
+  'question.withdrawn': { ticketId: string; questionId: string; by: 'worker' | 'ticket' }
   'policy.changed': { from: string; to: string }
 }
 export type DomainEvent = { [K in keyof DomainEvents]: { type: K; at: string; data: DomainEvents[K] } }[keyof DomainEvents]
+
+/** What a Fact records: every Domain event, plus the three moments the domain holds no event for. */
+export type FactType = keyof DomainEvents | 'report.recorded' | 'receipt.queued' | 'receipt.sent' | 'receipt.dropped'
+/** Whether the Engine saw the moment happen (`recorded`) or a later backfill derived it from stored state (`derived`). */
+export type FactOrigin = 'recorded' | 'derived'
+/** The structured payload of a Fact; it is the event's own data, or the fields the three eventless moments carry. */
+export type FactData = Record<string, unknown>
+
+/** One moment in a Ticket's history, kept so the timeline can be read after the business row has moved on. */
+export interface Fact {
+  /** The Ticket it belongs to, or `null` for a moment that concerns no Ticket, such as an Eval starting. */
+  ticket: string | null
+  /** When it happened, or `null` when the record it came from never carried a time. */
+  at: string | null
+  type: FactType
+  data: FactData
+  origin: FactOrigin
+}
 
 /** Durable state. Every method is synchronous so `atomic` can wrap a unit of work. */
 export interface Repositories {
@@ -139,5 +161,14 @@ export interface Repositories {
     get(id: string): Decision | undefined
     save(decision: Decision): void
     byThread(key: string): Decision[]
+  }
+  facts: {
+    /** Appends one Fact; Facts are only ever inserted, never updated or deleted. */
+    append(fact: Fact): void
+    /**
+     * Facts of `ticket` in time order, oldest first, limited to `limit` when given.
+     * Rows without a time sort before the timed ones so a backfilled row keeps a stable place.
+     */
+    of(ticket: string, limit?: number): Fact[]
   }
 }

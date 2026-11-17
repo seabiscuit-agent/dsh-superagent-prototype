@@ -4,6 +4,10 @@
 `status`, `start`, and `restart` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
 reporting a runtime error, which `restart` may fix; 2 when it runs while a component such as a Source reports an error;
 and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they need a person.
+
+`why <ticket-id>` prints one Ticket's timeline, the same rows its panel shows and `GET .../tickets/<id>/timeline`
+returns: 0 when it printed, 1 when the service did not answer, 3 when it still waits for setup, and 4 when no Ticket has
+that id. `--backfill` first derives the Facts the Ticket's stored rows still imply, writing each one once.
 """
 
 import argparse
@@ -19,6 +23,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -206,23 +211,98 @@ def start(args):
     raise RuntimeError('Startup health check timed out; inspect the log. Any running process was left intact.')
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status'])
-    parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent',
+UNKNOWN_TICKET = 4
+
+
+def timeline(url, ticket_id, backfill):
+    """Return `(exit code, timeline)` for one Ticket, or `(exit code, None)` when the service did not answer."""
+    method = 'POST' if backfill else 'GET'
+    path = '/orchestrator/api/tickets/' + urllib.parse.quote(ticket_id, safe='') + '/timeline' + ('/backfill' if backfill else '')
+    request = urllib.request.Request(url.rstrip('/') + path, method=method, headers={'x-orchestrator-request': '1'})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return 0, json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return UNKNOWN_TICKET, None
+        raise RuntimeError(f'The management API answered {error.code} for ticket {ticket_id}.') from error
+    except (OSError, ValueError):
+        return 1, None
+
+
+def why(args):
+    """Print one Ticket's timeline: the rows its panel shows, in order, or the same array as JSON."""
+    current = state(args.url)
+    if current is None:
+        print(f'dsh-superagent does not answer at {args.url}; no timeline was read.', file=sys.stderr)
+        return 1
+    if current['setup']:
+        print('dsh-superagent is waiting for setup: ' + str(current['setup'].get('detail', '')), file=sys.stderr)
+        return SETUP_WAITS
+    code, view = timeline(args.url, args.ticket_id, args.backfill)
+    if view is None:
+        if code == UNKNOWN_TICKET:
+            print(f'No ticket has the id {args.ticket_id}; nothing was recorded for it.', file=sys.stderr)
+        else:
+            print(f'dsh-superagent does not answer at {args.url}; no timeline was read.', file=sys.stderr)
+        return code
+    if args.json:
+        print(json.dumps(view['facts'], ensure_ascii=False, indent=2))
+        return 0
+    for fact in view['facts']:
+        marks = [mark for mark, shown in (('derived', fact['origin'] == 'derived'),) if shown]
+        print(f"{fact['at'] or 'no time'}  {fact['type']}  {fact['summary']}" + (f"  [{', '.join(marks)}]" if marks else ''))
+    if not view['facts']:
+        print('No Facts recorded.')
+    if view.get('truncated'):
+        print(f"Showing the newest {len(view['facts'])} Facts only.")
+    return 0
+
+
+def parser():
+    """The command line: the four service actions, and `why` for one Ticket's timeline."""
+    # Every option is accepted before and after the action, so existing callers keep working. The subcommands default to
+    # `SUPPRESS`, so an option given before the action is not overwritten by the subcommand's defaults.
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument('--profile', default=argparse.SUPPRESS,
                         help='DSH profile that loads dsh-superagent; its tmux session is dsh-<profile>.')
-    parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082',
-                        help='Health-check URL; override after changing the profile port.')
-    parser.add_argument('--timeout', type=float, default=60, help='Startup timeout in seconds.')
-    parser.add_argument('--stop-timeout', type=float, default=300,
+    shared.add_argument('--url', default=argparse.SUPPRESS, help='Health-check URL; override after changing the profile port.')
+    shared.add_argument('--timeout', type=float, default=argparse.SUPPRESS, help='Startup timeout in seconds.')
+    shared.add_argument('--stop-timeout', type=float, default=argparse.SUPPRESS,
                         help='Graceful shutdown timeout in seconds; running Executor Sessions finish their step first.')
-    parser.add_argument('--respect-stop', action='store_true',
-                        help='For monitoring: never start/restart after an intentional stop.')
-    args = parser.parse_args()
+    shared.add_argument('--respect-stop', action='store_true', default=argparse.SUPPRESS,
+                        help='For monitoring: never start or restart after an intentional stop.')
+    top = argparse.ArgumentParser(description=__doc__, parents=[shared], formatter_class=argparse.RawDescriptionHelpFormatter)
+    actions = top.add_subparsers(dest='action', required=True, metavar='{start,stop,restart,status,why}')
+    for name, summary in (('start', 'start the service'), ('stop', 'stop the service'),
+                          ('restart', 'stop, then start the service'), ('status', 'print its state and exit code')):
+        actions.add_parser(name, parents=[shared], help=summary, description=summary)
+    ask = actions.add_parser('why', parents=[shared], help="print one Ticket's timeline",
+                             description="Print one Ticket's timeline, oldest first, as its panel shows it.")
+    ask.add_argument('ticket_id', help='the Ticket id')
+    ask.add_argument('--json', action='store_true', help='print the same array the HTTP route returns')
+    ask.add_argument('--backfill', action='store_true',
+                     help="first derive the Facts the Ticket's stored rows still imply, writing each once")
+    return top
+
+
+def settings(args):
+    """Fill the shared options from the environment, the way the four service actions always read them."""
+    args.profile = getattr(args, 'profile', None) or os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent'
+    args.url = getattr(args, 'url', None) or os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082'
+    args.timeout = getattr(args, 'timeout', None) or 60
+    args.stop_timeout = getattr(args, 'stop_timeout', None) or 300
+    args.respect_stop = bool(getattr(args, 'respect_stop', False))
+    return args
+
+
+def main():
+    top = parser()
+    args = settings(top.parse_args())
     if args.timeout <= 0 or args.stop_timeout <= 0:
-        parser.error('--timeout and --stop-timeout must be positive')
+        top.error('--timeout and --stop-timeout must be positive')
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', args.profile):
-        parser.error('--profile must be a DSH profile name')
+        top.error('--profile must be a DSH profile name')
     os.umask(0o077)
     with (control(args.profile) / 'operation.lock').open('a') as lock:
         try:
@@ -232,6 +312,8 @@ def main():
         if args.respect_stop and args.action in ('start', 'restart') and stopped(args.profile):
             print('Intentional stop is active; automatic recovery skipped.')
             return 0
+        if args.action == 'why':
+            return why(args)
         if args.action == 'status':
             return status(args)
         if args.action in ('stop', 'restart'):

@@ -6,10 +6,10 @@ import { checkedImText } from '../infra/text.ts'
 import { SOURCE } from '../sources/local.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.ts'
-import type { Store } from './store.ts'
+import type { DropReason, Store } from './store.ts'
 
 export interface OutboxHost {
-  readonly store: Pick<Store, 'atomic' | 'receipts'>
+  readonly store: Pick<Store, 'atomic' | 'receipts' | 'facts'>
   readonly effects: Pick<Effects, 'enqueue' | 'cancel' | 'handle' | 'idle'>
   readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send'>
   readonly commands: Commands
@@ -41,7 +41,15 @@ export class Outbox implements OutboxPort {
     // Validate IM reply length here; acknowledgements are already validated when decided.
     if (message.kind === 'reply' && message.channel.source === 'feishu') checkedImText(message.text)
     const { store, effects } = this.host
-    store.atomic(() => { if (store.receipts.add(message)) effects.enqueue('reply', message.id, {}) })
+    // The queueing moment is the receipt's own: a timeline row for it must read the same time later.
+    const queuedAt = message.queuedAt ?? new Date().toISOString()
+    const receipt: OutboundMessage = { ...message, queuedAt }
+    store.atomic(() => {
+      if (!store.receipts.add(receipt)) return
+      effects.enqueue('reply', receipt.id, {})
+      store.facts.append({ ticket: receipt.ticketId ?? null, at: queuedAt, type: 'receipt.queued',
+        data: { receiptId: receipt.id, kind: receipt.kind }, origin: 'recorded' })
+    })
   }
   status(id: string): ReplyStatus | undefined { return this.host.store.receipts.get(id)?.status }
   withdraw(id: string): void {
@@ -49,6 +57,16 @@ export class Outbox implements OutboxPort {
     store.atomic(() => { if (store.receipts.withdraw(id)) effects.cancel('reply', id) })
   }
   sent(): Promise<void> { return this.host.effects.idle('reply') }
+  /** Settles one receipt and keeps the moment on its Ticket's chain, both in one transaction. */
+  private settle(receipt: OutboundMessage, outcome: 'sent' | DropReason): void {
+    const { store } = this.host
+    const at = new Date().toISOString()
+    store.atomic(() => {
+      store.receipts.settle(receipt, outcome)
+      store.facts.append({ ticket: receipt.ticketId ?? null, at, type: outcome === 'sent' ? 'receipt.sent' : 'receipt.dropped',
+        data: { receiptId: receipt.id, kind: receipt.kind, ...outcome === 'sent' ? {} : { reason: outcome } }, origin: 'recorded' })
+    })
+  }
   private async deliver(id: string): Promise<void> {
     const { store, sources, commands } = this.host
     const receipt = store.receipts.get(id)
@@ -56,19 +74,19 @@ export class Outbox implements OutboxPort {
     if (!sources.instance(receipt.channel.source)?.enabled) throw new Later('The Source is off or not installed')
     // Hold later messages for the same ticket and conversation behind an earlier pending message until it exceeds the failure threshold.
     if (store.receipts.behind(id, FAILURES_BEFORE_ERROR)) throw new Later('An earlier message of this ticket to this conversation waits')
-    if (!sources.channelAllowed(receipt.channel)) { store.receipts.settle(receipt, 'channelIgnored'); return }
+    if (!sources.channelAllowed(receipt.channel)) { this.settle(receipt, 'channelIgnored'); return }
     // The local Source's conversation is the main session itself: its receipts render there as notice rows instead of going out
     // through a channel, so what the panel shows is exactly what was delivered; a failed render retries like any channel failure.
     if (receipt.channel.source === SOURCE) {
       await this.host.renderLocal(receipt, localSummary(receipt))
-      store.receipts.settle(receipt, 'sent')
+      this.settle(receipt, 'sent')
       if (receipt.questionId) this.host.answered?.(receipt)
       return
     }
     // A permanently unreachable target (such as a recalled message or deleted Issue) settles as `channelGone` so its receipt prevents retries.
     const result = await sources.send(receipt, commands)
     if (result === 'waiting') throw new Later('The Source is not installed')
-    store.receipts.settle(receipt, result === 'gone' ? 'channelGone' : 'sent')
+    this.settle(receipt, result === 'gone' ? 'channelGone' : 'sent')
     if (result !== 'gone' && receipt.questionId) this.host.answered?.(receipt)
   }
 }
