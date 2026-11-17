@@ -7,8 +7,8 @@
 
 ## 2. Source kind 与配置面
 
-- [ ] 2.1 新建 `src/sources/schedule.ts`：`SOURCE = 'schedule'`、`ScheduleConfigSchema`（`jobs: JobRow[]`，`JobRow = {key, cron, timezone, title, text, enabled}`，key 正则 + 同配置唯一性 refine）。**cron 与时区不在这里校验**（只要求非空字符串）：它们是逐行属性，放在 schema 里会让一行笔误禁用整个来源，见 spec 第 1 条的「校验分两层」
-- [ ] 2.2 `fields`：一个 `rows` 字段，列依次为 `key`（`text` + `pattern`）、`cron`（`text`）、`timezone`（`text`）、`title`（`text`）、`text`（`text`）、`enabled`（`select`，options 为 `true` / `false`）——`FieldSpec` 的 rows 列只支持 `text` 与 `select`
+- [ ] 2.1 新建 `src/sources/schedule.ts`：`SOURCE = 'schedule'`、`ScheduleConfigSchema`（`jobs: JobRow[]`，`JobRow = {key, cron, timezone, title, text, enabled: z.enum(['true','false']).default('true')}`，key 正则 + 同配置唯一性 refine；`enabled` 用字符串而不是 `z.boolean()`，因为行编辑器的 `select` 列只能产出字符串，`z.boolean()` 会让每次保存都解析失败）。**cron 与时区不在这里校验**（只要求非空字符串）：它们是逐行属性，放在 schema 里会让一行笔误禁用整个来源，见 spec 第 1 条的「校验分两层」
+- [ ] 2.2 `fields`：一个 `rows` 字段，列依次为 `key`（`text` + `pattern`）、`cron`（`text`）、`timezone`（`text`）、`title`（`text`）、`text`（`text`）、`enabled`（`select`，options 为 `"true"` / `"false"`）——`FieldSpec` 的 rows 列只支持 `text` 与 `select`，且第二列是 `text` 时才会被行摘要用作用户可见名字（`ROWS_SHOWN = 6`），所以把 `title` 放第二列
 - [ ] 2.3 `scope`：`meta.job` 命中配置里某个启用行时返回 `{listened: true, observed: true, row: job}`，否则 `{listened: true, observed: false}`——**`observed` 必须为真**，否则 `machineGate` 的第二道条件（`src/policy.ts:175`）会因为没有 `addressed` 而拒绝每一条 Trigger；`health: ['schedule']`
 - [ ] 2.4 `policy`：`schema`（`allowed` 默认空数组、`bots` 默认空数组，每字段带 default）；`rows(config)` 为每个启用行返回 `{id: key, label: title, note: "cron (timezone)", cells: {listedUnaddressed: false, unlistedAddressed: false, unlistedUnaddressed: true}}`
 - [ ] 2.5 不实现 `channel`、`threadContext`、`find`、`repliesTo`（设计决策 7）；`facts()` 只拿得到 `deployment`、拿不到配置，因此省略或只放与配置无关的常量事实，不要试图用它显示每行状态
@@ -33,7 +33,7 @@
 
 ## 5. 测试与验收
 
-- [ ] 5.1 新建 `tests/schedule.spec.ts`（假时钟）：每分钟任务连续 3 次到期产 3 条 Trigger 且 id 互异；停机三天只补 1 条且 `at` 为最后一档；同一 due 重启两次只入域一次；`enabled=false` / 来源关闭 / `ctx.paused()` 为真三种情况都不产 Trigger，且暂停期间游标不前进
+- [ ] 5.1 新建 `tests/schedule.spec.ts`（假时钟）：每分钟任务连续 3 次到期产 3 条 Trigger 且 id 互异；停机三天只补 1 条且 `at` 为最后一档；同一 due 重启两次只入域一次；该行 `enabled: "false"` / 来源关闭 / `ctx.paused()` 为真三种情况都不产 Trigger，且暂停期间游标不前进
 - [ ] 5.2 准入用例：默认 `ignore` 时不建单且 reason 为 `admission_ignored`；改为 `inferred` + `auto` 且规则命中时建单，mandate strength 为 `inferred`、cell 为 `unlistedUnaddressed`
 - [ ] 5.3 `env -u GIT_CONFIG_GLOBAL pnpm check` 通过；`tests/sources.spec.ts`、`tests/registry.spec.ts` 的相关断言同步更新
 - [ ] 5.4 `openspec validate --all --strict` 通过

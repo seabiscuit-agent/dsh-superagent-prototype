@@ -10,7 +10,8 @@
 
 The system SHALL 提供内置 Source kind `schedule`，其配置是一组任务行，每行恰好包含
 `key`、`cron`、`timezone`、`title`、`text`、`enabled` 六个字段；`key` 匹配 `^[a-z0-9][a-z0-9-]*$`
-且在同一配置内唯一，`cron` 与 `timezone` 非空，`title` / `text` 非空，`enabled` 缺省为 `true`。
+且在同一配置内唯一，`cron` 与 `timezone` 非空，`title` / `text` 非空，`enabled` 取 `"true"` /
+`"false"`（行编辑器只能产出字符串）、缺省 `"true"`。
 
 校验分两层，MUST NOT 混同：
 
@@ -25,7 +26,7 @@ The system SHALL 提供内置 Source kind `schedule`，其配置是一组任务�
 #### Scenario: 保存一行每分钟任务
 
 - **GIVEN** `schedule` Source 已安装但没有任何任务行
-- **WHEN** 用户保存一行 `{key: "ci-sweep", cron: "*/1 * * * *", timezone: "Asia/Shanghai", title: "CI 巡检", text: "看一次 CI 队列", enabled: true}`
+- **WHEN** 用户保存一行 `{key: "ci-sweep", cron: "*/1 * * * *", timezone: "Asia/Shanghai", title: "CI 巡检", text: "看一次 CI 队列", enabled: "true"}`
 - **THEN** 配置通过校验并被持久化，面板里出现这一行；下次触发时刻不在行编辑器里显示（见
   「触发与状态可观察」），以来源线程的实际触发为证
 
@@ -161,7 +162,7 @@ MUST 对该来源的 Trigger 返回 `observed: true`（并带 `row = <job key>`�
 
 #### Scenario: 任务行已被删除或停用后的迟到 Trigger
 
-- **GIVEN** 一条 Trigger 的 `meta.job` 在当前配置里已不存在，或该行 `enabled = false`
+- **GIVEN** 一条 Trigger 的 `meta.job` 在当前配置里已不存在，或该行 `enabled = "false"`
 - **WHEN** 该 Trigger 到达 intake 或之后重新校验
 - **THEN** `scope()` 返回 `observed: false`，Trigger 仍被保存但 `machineGate()` 以 `not_human`
   拒绝，落成一条 `ignore` 决策；若整个来源实例被关闭，则 `scope()` 返回
@@ -178,7 +179,7 @@ MUST 对该来源的 Trigger 返回 `observed: true`（并带 `row = <job key>`�
 
 #### Scenario: 来源或实例被关闭
 
-- **GIVEN** `schedule` 实例被 disabled，或有任务行 `enabled = false`
+- **GIVEN** `schedule` 实例被 disabled，或有任务行 `enabled = "false"`
 - **WHEN** 到期时刻到达
 - **THEN** 不产生 Trigger；前者由 `scope()` 返回 `{listened: false, reason: "source_disabled"}`，
   后者该行根本不进入 watch 循环
