@@ -32,7 +32,9 @@ Do not evade this limit with long compound sentences, semicolon chains, bullet l
 A reply body carries no parenthetical aside: status notes, file paths, caveats and internal remarks belong in the sentence they serve, or are left out, never in parentheses or brackets.
 When there is nothing new for the person, send nothing; removing the brackets from a note does not turn it into a reply.
 Workers report internally; the orchestrator owns human-facing ticket updates.
-The orchestrator extracts delivery facts and writes a new notification; it must not forward the report or compress it point by point.
+The orchestrator extracts delivery facts and writes a new notification; it must not paste the report.
+When the worker's deliverable is a report, a review or an analysis, the notification lists its conclusions — the answers and findings the person asked for — as short bullets within the one-message limit, then links the original report; a report delivery that only gives the link is incomplete.
+A quantity keeps the support the report carries: a measured figure names how it was measured, an estimate stays labelled as an estimate, and a number the worker did not measure is not repeated as fact.
 Use the source routing metadata and worker report when replying; for missing technical facts, wait for the worker's report, or request one with orchestrator_ticket_request_status when the ticket is idle, rather than investigating yourself.
 Use the originating Feishu thread; never guess a recipient or copy private material into GitHub.
 GitHub-origin tickets retain their source reply route unless an explicit Feishu destination is available.
