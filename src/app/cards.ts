@@ -40,7 +40,7 @@ export function inputLine(ticket: Ticket, input: TicketInput, worker = false) {
   const read = { read: inputResource(ticket.id, input.id) }
   const names = input.kind === 'trigger' || input.kind === 'resumed' ? { trigger_id: input.triggerId }
     : input.kind === 'reopen' && !worker ? { decision_id: input.decisionId }
-    : input.kind !== 'text' ? read
+    : input.kind !== 'text' && input.kind !== 'agenda' ? read
     : input.text.length <= INPUT_TEXT ? { text: input.text }
     : { preview: preview(input.text).slice(0, INPUT_TEXT), chars: input.text.length, ...read }
   return { kind: input.kind, at: input.at, ...names, ...ticket.undelivered.includes(input.id) ? { undelivered: true } : {} }
@@ -56,11 +56,13 @@ export function newestPage<T, L>(items: readonly T[], offset: number, size: numb
   return { items: newest.slice(offset, offset + size).map(line), ...more ? { next_resource: next, next_offset: offset + size } : {} }
 }
 export interface TicketThread { thread: string; context?: true; bound?: true }
-/** Projects a ticket with its linked triggers, threads, and first pages of assignments and inputs, omitting decision IDs for workers. */
-export function ticketDetails(ticket: Ticket, threads: TicketThread[], batch: readonly Trigger[], worker = false) {
+/** Projects a ticket with its linked triggers, threads, first pages of assignments and inputs, and pending scheduled wakes, omitting decision IDs for workers. */
+export function ticketDetails(ticket: Ticket, threads: TicketThread[], batch: readonly Trigger[], worker = false,
+  agenda: readonly { key: string; at: string; reason: string }[] = []) {
   // Drop card preview because the latest report's preview is already shown on the first assignment entry.
   const { preview: _preview, ...card } = ticketCard(ticket)
   return { ...card, trigger_id: ticket.origin.triggerId, ...batch.length ? { batch: batch.map(batchLine) } : {},
+    ...agenda.length ? { agenda } : {},
     ...worker ? {} : { decision_id: ticket.decisionId }, threads, directory: ticket.execution?.directory,
     scope: ticket.mandate.scope, requested_by: ticket.mandate.actor.id,
     assignments: newestPage(ticket.assignments, 0, ASSIGNMENTS, item => assignmentLine(ticket, item), `ticket/${ticket.id}/assignments`),

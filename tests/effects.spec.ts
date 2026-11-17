@@ -2,8 +2,9 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { Effects, Later } from '../src/app/effects.ts'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Effects, Later, agendaKey } from '../src/app/effects.ts'
+import { agendaHandler } from '../src/app/agenda.ts'
 import { Store } from '../src/app/store.ts'
 import { HealthBoard } from '../src/infra/health.ts'
 import { deferred } from './fixtures/async.ts'
@@ -204,4 +205,50 @@ it('reports a failure of the queue itself under its kind, until a dispatch of th
 it('refuses a second handler for a kind', () => {
   effects.handle('relay', async () => {})
   expect(() => effects.handle('relay', async () => {})).toThrow('The relay effects already have a handler')
+})
+
+describe('scheduled agenda wakes', () => {
+  const payload = (key: string, at: string) => ({ ticketId: 't1', key, reason: `why ${key}`, at })
+  it('holds a wake until its time and delivers it once, deleting its row', async () => {
+    const run = vi.fn(async () => {})
+    effects.handle('agenda', run)
+    effects.enqueue('agenda', agendaKey('t1', 'a'), payload('a', '2026-09-09T00:00:10.000Z'), '2026-09-09T00:00:10.000Z')
+    await effects.idle()
+    expect(run).not.toHaveBeenCalled()
+    clock += 10_000
+    effects.kick()
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
+    await effects.idle()
+    expect(effects.pending('agenda')).toBe(false)
+  })
+  it('lists a ticket\'s pending wakes by due time, replacing one rescheduled under the same key', () => {
+    effects.enqueue('agenda', agendaKey('t1', 'b'), payload('b', '2026-09-09T00:02:00.000Z'), '2026-09-09T00:02:00.000Z')
+    effects.enqueue('agenda', agendaKey('t1', 'a'), payload('a', '2026-09-09T00:01:00.000Z'), '2026-09-09T00:01:00.000Z')
+    effects.enqueue('agenda', agendaKey('t2', 'c'), { ticketId: 't2', key: 'c', reason: 'other ticket', at: '2026-09-09T00:00:30.000Z' }, '2026-09-09T00:00:30.000Z')
+    effects.enqueue('agenda', agendaKey('t1', 'a'), { ticketId: 't1', key: 'a', reason: 'moved', at: '2026-09-09T00:03:00.000Z' }, '2026-09-09T00:03:00.000Z')
+    expect(effects.agendaRows('t1')).toEqual([
+      { key: 'b', at: '2026-09-09T00:02:00.000Z', reason: 'why b' },
+      { key: 'a', at: '2026-09-09T00:03:00.000Z', reason: 'moved' },
+    ])
+    effects.cancel('agenda', agendaKey('t1', 'b'))
+    expect(effects.agendaRows('t1').map(row => row.key)).toEqual(['a'])
+  })
+  it('refuses a time that does not parse instead of queueing a wake that never fires', () => {
+    expect(() => effects.enqueue('agenda', agendaKey('t1', 'a'), payload('a', 'soon'), 'soon')).toThrow('Invalid effect time: soon')
+  })
+})
+
+describe('agenda handler', () => {
+  it('keeps a waiting wake queued and retries it without spending a failure', async () => {
+    let calls = 0
+    const engine = { agenda: () => (++calls === 1 ? 'waiting' as const : 'delivered' as const) }
+    effects.handle('agenda', agendaHandler(engine))
+    effects.enqueue('agenda', agendaKey('t1', 'a'), { ticketId: 't1', key: 'a', reason: 'again', at: '2026-09-09T00:00:00.000Z' })
+    await vi.waitFor(() => expect(calls).toBe(1))
+    clock += 2_000
+    effects.kick()
+    await vi.waitFor(() => expect(calls).toBe(2))
+    await effects.idle()
+    expect(effects.pending('agenda')).toBe(false)
+  })
 })

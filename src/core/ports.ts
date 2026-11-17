@@ -98,6 +98,8 @@ export interface DomainEvents {
   'trigger.requeued': { triggerId: string }
   /** A person's follow-up that reached tickets and that an earlier version also queued for Eval left the queue. */
   'trigger.followup': { triggerId: string }
+  /** A scheduled wake came due for a ticket that had ended or no longer exists, so it was dropped without resuming it. */
+  'agenda.dropped': { ticketId: string; key: string; reason: string; at: string }
   'policy.changed': { from: string; to: string }
 }
 export type DomainEvent = { [K in keyof DomainEvents]: { type: K; at: string; data: DomainEvents[K] } }[keyof DomainEvents]

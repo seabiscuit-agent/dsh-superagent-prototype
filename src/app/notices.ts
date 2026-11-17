@@ -56,6 +56,12 @@ export function eventNotice(event: DomainEvent, ticket: (id: string) => Ticket |
     const id = event.data.triggerId
     return receiptNotice({ trigger_requeued: id, read: `trigger/${id}`, at }, `Trigger ${id} queued for a fresh assessment`)
   }
+  if (event.type === 'agenda.dropped') {
+    const { ticketId, key, reason, at } = event.data
+    return receiptNotice({ agenda_dropped: { ticket_id: ticketId, key, reason, at },
+      note: 'The scheduled wake was dropped and its ticket was not resumed, because the ticket had ended or no longer existed.' },
+      `Dropped the scheduled wake ${key} for ticket ${ticketId}`)
+  }
   if (event.type === 'thread.unsubscribed' && event.data.by === 'person') return subscriptionNotice(event.data.threadKey, at)
   // An ended ticket leaving an on-demand Thread says nothing the ticket-ended receipt did not already say.
   if (event.type === 'thread.unsubscribed' && event.data.by === 'ticket') return undefined

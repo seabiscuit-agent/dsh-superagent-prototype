@@ -7,6 +7,7 @@ import { UserError, followupOwners, key, reasonText, type Decision, type Decisio
 import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
+import { agendaKey, type Effects } from '../effects.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { readResource, type MainResourceHost, type ResourceHost } from '../resources.ts'
 import type { Sessions } from '../sessions.ts'
@@ -21,6 +22,8 @@ export interface MainToolsHost {
   readonly context: Context
   readonly engine: Pick<EngineForMainSession, 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'> & EngineForPeople
   readonly store: Pick<Store, 'tickets' | 'triggers' | 'threads' | 'atomic' | 'replyStatus' | 'settings'>
+  /** Pending scheduled wakes: one row per ticket and name, replaced by a later schedule of the same name. */
+  readonly effects: Pick<Effects, 'enqueue' | 'cancel'>
   readonly prompts: Pick<Prompts, 'preview' | 'save'>
   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery' | 'modelRetry'>
   readonly settings: Pick<Settings, 'view' | 'block' | 'save' | 'pause' | 'sync'>
@@ -203,6 +206,36 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
       execute: async args => {
         host.engine.note(args.ticket_id, args.text)
         return routed(host, { reason: 'Noted for the worker', ticketId: args.ticket_id })
+      },
+    }),
+    tool({
+      name: 'orchestrator_schedule',
+      description: 'Schedule one future wake for an open ticket, or replace the wake under the same key; when it comes due the ticket receives an automatic agenda Input, without asking a model first. Use an ISO time with Z or an offset; omit at to let the next pass deliver it. Pass cancel to drop the wake under that key.',
+      schema: z.object({
+        ticket_id: z.string().min(1),
+        key: z.string().describe('The wake\'s name within the ticket, matching [a-z0-9][a-z0-9_-]{0,63}; scheduling again replaces it.'),
+        at: z.string().optional().describe('When to wake the ticket, as an ISO 8601 date and time with Z or a UTC offset.'),
+        reason: z.string().optional().describe('What the woken worker should look at, 1 to 500 characters; kept in the Input and the ticket view.'),
+        cancel: z.boolean().default(false).describe('Drop this key\'s scheduled wake instead of scheduling one.'),
+      }).strict(),
+      execute: async args => {
+        const ticket = host.store.tickets.get(args.ticket_id)
+        if (!ticket) throw new UserError('unknownTicket')
+        if (ticket.ended) throw new UserError('ticketEnded')
+        const identity = agendaKey(args.ticket_id, args.key)
+        if (args.cancel) {
+          host.effects.cancel('agenda', identity)
+          return { cancelled: true, key: args.key }
+        }
+        if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(args.key)) throw new UserError('invalidKey', { key: args.key })
+        const reason = args.reason?.trim() ?? ''
+        if (reason.length < 1 || reason.length > 500) throw new UserError('invalidReason')
+        // An omitted `at` is due on the next pass; a stated one must parse to an instant, including its offset.
+        const parsed = args.at === undefined ? Date.now() : Date.parse(args.at)
+        if (!Number.isFinite(parsed)) throw new UserError('invalidTime', { at: args.at ?? '' })
+        const at = new Date(parsed).toISOString()
+        host.effects.enqueue('agenda', identity, { ticketId: args.ticket_id, key: args.key, reason, at }, at)
+        return { scheduled: true, key: args.key, at }
       },
     }),
     tool({

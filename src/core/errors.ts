@@ -44,6 +44,9 @@ export const USER_ERRORS = {
   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
   noLabels: ['refused', 'This Source has no names to refresh'],
   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
+  invalidTime: ['refused', 'The time is not a parseable date and time with a UTC offset or Z: {at}'],
+  invalidReason: ['refused', 'A scheduled wake needs a reason of 1 to 500 characters'],
+  invalidKey: ['refused', 'A scheduled wake key must match [a-z0-9][a-z0-9_-]{0,63}'],
 } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
 export type UserErrorCode = keyof typeof USER_ERRORS
 

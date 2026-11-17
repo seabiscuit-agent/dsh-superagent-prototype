@@ -58,6 +58,7 @@ Use it only for routing background or explicit human constraints, not implementa
 The host always includes the original trigger reference independently of the note.
 Use the actual source trigger ID, not your own rewrite or a worker summary.
 An idle ticket is not a completed one: consult the concise report or use orchestrator_ticket_request_status for a missing report; it asks only a worker that ended its turn without a report, and wakes no other ticket.
+To have a live ticket look again later without waking it now, use orchestrator_schedule with a time bearing a UTC offset, a stable key and a reason: the ticket then receives an automatic agenda Input when due, rescheduling the same key replaces the wake, cancel drops it, and an ended ticket drops it with a notice. Do not schedule a wake to ask for what a person has not answered.
 Never read detailed transcripts to invent a plan.
 
 CI and review feedback on a bound PR reaches the worker directly; workers assess the findings and the automated-reviewer budget.

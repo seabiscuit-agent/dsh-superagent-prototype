@@ -1,6 +1,6 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
 import { UserError } from './errors.ts'
-import { isoTime, liveTicket } from './model.ts'
+import { isoTime, liveTicket, waitsForPerson } from './model.ts'
 import type { ChannelRef, Decision, PolicyEffect, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Candidate, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
@@ -220,6 +220,28 @@ export class Engine {
    */
   note(ticketId: string, text: string): Ticket { return this.repo.atomic(() => this.tickets.note(ticketId, text)) }
   /**
+   * Hands a due scheduled wake to a live ticket as an automatic `agenda` Input: see `Effects` and `orchestrator_schedule`.
+   * A ticket waiting for a person keeps its scheduled wake queued (`waiting`) so the retry delivers it once the answer arrives,
+   * and one that ended or no longer exists drops it (`ended` or `missing`) without resuming the ticket.
+   */
+  agenda(ticketId: string, key: string, reason: string, at: string): 'delivered' | 'waiting' | 'ended' | 'missing' {
+    const dropped = () => this.options.emit?.({ type: 'agenda.dropped', at: this.options.now?.() ?? new Date().toISOString(), data: { ticketId, key, reason, at } })
+    return this.repo.atomic(() => {
+      const ticket = this.repo.tickets.get(ticketId)
+      if (!ticket) {
+        dropped()
+        return 'missing'
+      }
+      if (!liveTicket(ticket)) {
+        dropped()
+        return 'ended'
+      }
+      if (waitsForPerson(ticket)) return 'waiting'
+      this.tickets.addInput(ticket, { id: `agenda:${ticketId}:${key}:${at}`, kind: 'agenda', text: reason.slice(0, 500), at })
+      return 'delivered'
+    })
+  }
+  /**
    * An Executor's hand-back of a message that reached its ticket but asks for more than it: see `Evals.handback`.
    * @returns whether it was queued for Eval: false while another ticket still decides it, and for one this ticket did not decide (see `Evals.handback`).
    * @throws UserError when the ticket or trigger is unknown, the trigger did not reach the ticket, or the ticket already handed it back.
@@ -260,7 +282,7 @@ export class Engine {
 /** What Sources ask and tell the Engine. */
 export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadClosed'>
 /** What the main Session asks of the Engine. */
-export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'>
+export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note' | 'agenda'>
 /** What people ask of the Engine, through the panel or the main Session. */
 export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
 /** What Settings tells the Engine. */

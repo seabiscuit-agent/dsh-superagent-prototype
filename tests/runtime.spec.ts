@@ -1874,3 +1874,44 @@ it('keeps the Policy the main Session judges by in its prompt, after admission a
   expect(policy()).toContain('No rule is enabled: a proactive candidate can only be ignored.')
   expect(policy()).toContain('The accept mode and the rules decide proactive candidates only')
 })
+
+it('schedules, replaces and cancels one wake per ticket and key, and shows it on the ticket page until it fires', async () => {
+  const { ticket, sessionId } = await acceptedTicket(feishu('31', '@bot 修一下回归'))
+  // The tool is the main Session's alone: a worker cannot schedule its own wake.
+  expect(tools.get(sessionId)?.has('orchestrator_schedule')).toBe(false)
+  const at = '2030-01-01T00:00:00.000Z'
+  expect(await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', at, reason: 'check CI' }))
+    .toEqual({ scheduled: true, key: 'ci', at })
+  const later = '2030-01-02T00:00:00.000Z'
+  await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', at: later, reason: 'check CI again' })
+  expect(runtime.effects.agendaRows(ticket.id)).toEqual([{ key: 'ci', at: later, reason: 'check CI again' }])
+  expect((await api('GET', `tickets/${ticket.id}`)).body).toMatchObject({ agenda: [{ key: 'ci', at: later, reason: 'check CI again' }] })
+  expect(await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', cancel: true }))
+    .toEqual({ cancelled: true, key: 'ci' })
+  expect(runtime.effects.agendaRows(ticket.id)).toEqual([])
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'Bad Key', reason: 'x' })).rejects.toThrow('must match')
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', reason: ' ' })).rejects.toThrow('1 to 500')
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'ci', at: 'soon', reason: 'x' })).rejects.toThrow('parseable')
+  await expect(runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: 'nope', key: 'ci', reason: 'x' })).rejects.toThrow('ticket')
+})
+
+it('delivers a due wake to the running worker as a scheduled agenda Input and forgets it', async () => {
+  const { ticket, sessionId } = await acceptedTicket(feishu('32', '@bot 修一下回归'))
+  deliveries.mockClear()
+  await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'now', at: new Date().toISOString(), reason: 'look again' })
+  await vi.waitFor(() => expect(deliveries.mock.calls.some(([call]) => call.sessionId === sessionId && call.text.includes('Scheduled wake'))).toBe(true))
+  expect(runtime.store.tickets.get(ticket.id)!.inputs).toContainEqual(expect.objectContaining({ kind: 'agenda', text: 'look again' }))
+  await vi.waitFor(() => expect(runtime.effects.agendaRows(ticket.id)).toEqual([]))
+})
+
+it('drops a wake whose ticket ended and tells the main Session once', async () => {
+  const { ticket } = await acceptedTicket(feishu('33', '@bot 修一下回归'))
+  deliveries.mockClear()
+  await runTool(runtime.masterId, 'orchestrator_schedule', { ticket_id: ticket.id, key: 'late', at: new Date(Date.now() + 30).toISOString(), reason: 'too late' })
+  runtime.engine.stopTicket(ticket.id, 'not needed')
+  await new Promise(resolve => setTimeout(resolve, 50))
+  runtime.passes.request()
+  await vi.waitFor(() => expect((agents.get(runtime.masterId)!.inject as ReturnType<typeof vi.fn>).mock.calls
+    .some(call => JSON.stringify(call).includes('agenda_dropped'))).toBe(true), { timeout: 5_000 })
+  expect(runtime.store.tickets.get(ticket.id)!.inputs.some(input => input.kind === 'agenda')).toBe(false)
+}, 15_000)

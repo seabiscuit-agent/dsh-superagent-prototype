@@ -23,7 +23,7 @@ function InputLine({ input, earlier = [] }: { input: Input; earlier?: { id: stri
       </button></div> : <div className="dt-row-title">{valueLabel(t, 'input', input.kind)}</div>}
       <div className="dt-row-meta">{input.kind === 'trigger' && <span>{valueLabel(t, 'input', input.kind)}</span>}<When
         at={input.at} /></div>
-      {(input.kind === 'text' || input.kind === 'note') && input.text && <div className="dt-row-quote"><MarkdownLite text={input.text} /></div>}
+      {(input.kind === 'text' || input.kind === 'note' || input.kind === 'agenda') && input.text && <div className="dt-row-quote"><MarkdownLite text={input.text} /></div>}
       {trigger?.handback && <Hint>{t('inputHandedBack', { reason: trigger.handback.reason })}</Hint>}
       <Earlier items={earlier} />
     </div>

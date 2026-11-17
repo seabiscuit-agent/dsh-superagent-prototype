@@ -21,7 +21,11 @@ export interface EffectPayloads {
   notice: { value: Record<string, unknown>; summary: string }
   /** Send a message for a Channel through its Source; the key is the message ID, whose receipt the Outbox keeps. */
   reply: Record<string, never>
+  /** Wake a ticket at a time the main Session scheduled; the key is `agendaKey(ticketId, name)`. */
+  agenda: { ticketId: string; key: string; reason: string; at: string }
 }
+/** One scheduled wake's row identity: a ticket and a name it chose, which a later schedule replaces. */
+export const agendaKey = (ticketId: string, name: string): string => `ticket:${ticketId}:${name}`
 export type EffectKind = keyof EffectPayloads
 interface Handler<K extends EffectKind> {
   run: (payload: EffectPayloads[K], key: string) => Promise<void>
@@ -58,11 +62,23 @@ export class Effects {
     this.seq = Number(store.db.prepare('SELECT IFNULL(MAX(seq), 0) AS seq FROM effect').get()?.seq ?? 0)
   }
   /** Upserts an effect in the caller's transaction, coalescing with any waiting row of the same kind and key while keeping its queue position. */
-  enqueue<K extends EffectKind>(kind: K, key: string, payload: EffectPayloads[K]): void {
+  enqueue<K extends EffectKind>(kind: K, key: string, payload: EffectPayloads[K], at?: string): void {
+    // A future `at` leaves the row queued until then; a past or absent one is due at once, on the next pass.
+    const due = at === undefined ? this.now() : Date.parse(at)
+    if (!Number.isFinite(due)) throw new Error(`Invalid effect time: ${at}`)
     this.store.db.prepare(`INSERT INTO effect (kind, key, value, seq, due, since) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(kind, key) DO UPDATE
       SET value = excluded.value, generation = generation + 1, attempts = 0, error = '', due = excluded.due`)
-      .run(kind, key, JSON.stringify(payload), ++this.seq, this.now(), new Date(this.now()).toISOString())
+      .run(kind, key, JSON.stringify(payload), ++this.seq, due, new Date(this.now()).toISOString())
     this.kick()
+  }
+  /** The pending scheduled wakes of a ticket, in due order, for the ticket resource: what a person can see is actually queued. */
+  agendaRows(ticketId: string): { key: string; at: string; reason: string }[] {
+    const rows = this.store.db.prepare('SELECT value, due FROM effect WHERE kind = ? AND key LIKE ? ORDER BY due')
+      .all('agenda', `${agendaKey(ticketId, '')}%`) as unknown as { value: string; due: number }[]
+    return rows.flatMap(row => {
+      const value = JSON.parse(row.value) as EffectPayloads['agenda']
+      return [{ key: value.key, at: new Date(row.due).toISOString(), reason: value.reason }]
+    })
   }
   handle<K extends EffectKind>(kind: K, run: Handler<K>['run'], options: Options<K> = {}): void {
     if (this.handlers.has(kind)) throw new Error(`The ${kind} effects already have a handler`)

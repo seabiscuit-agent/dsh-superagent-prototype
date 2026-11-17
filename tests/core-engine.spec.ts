@@ -1638,3 +1638,45 @@ describe('ignores from the card', () => {
     expect(() => h.engine.decide('5', { kind: 'accept', title: 'Fix', scope: 'small', reason: 'chat' })).toThrow(new UserError('notExplicit'))
   })
 })
+describe('agenda wake', () => {
+  const at = '2026-09-23T01:00:00.000Z'
+  it('delivers one automatic agenda Input and records nothing twice for the same key and time', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    expect(h.engine.agenda(ticketId, 'check', 'See whether CI passed', at)).toBe('delivered')
+    expect(h.engine.agenda(ticketId, 'check', 'See whether CI passed', at)).toBe('delivered')
+    const ticket = h.repo.tickets.get(ticketId)!
+    const inputs = ticket.inputs.filter(input => input.kind === 'agenda')
+    expect(inputs).toEqual([expect.objectContaining({ id: `agenda:${ticketId}:check:${at}`, kind: 'agenda', text: 'See whether CI passed' })])
+    h.settle()
+    expect(h.delivered.map(([, id]) => id)).toContain(`agenda:${ticketId}:check:${at}`)
+  })
+  it('keeps a wake waiting while the ticket waits for a person and delivers it after their message', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.tick(1); h.engine.report(ticketId, { state: 'blocked', summary: 'Which page?' })
+    expect(h.engine.agenda(ticketId, 'check', 'Look again', at)).toBe('waiting')
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'agenda')).toBe(false)
+    h.tick(1); h.engine.receive(trigger('2'))
+    expect(h.engine.agenda(ticketId, 'check', 'Look again', at)).toBe('delivered')
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'agenda')).toBe(true)
+  })
+  it('drops a wake for an ended or missing ticket and resumes neither', () => {
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const h = harness({}, { emit: event => events.push(event) })
+    const ticketId = accepted(h).ticketId!
+    h.engine.stopTicket(ticketId, 'not needed')
+    expect(h.engine.agenda(ticketId, 'check', 'Look again', at)).toBe('ended')
+    expect(h.engine.agenda('missing', 'check', 'Look again', at)).toBe('missing')
+    expect(h.repo.tickets.get(ticketId)!.ended).toBeDefined()
+    expect(events.filter(event => event.type === 'agenda.dropped').map(event => event.data.ticketId)).toEqual([ticketId, 'missing'])
+    expect(h.repo.tickets.get(ticketId)!.inputs.some(input => input.kind === 'agenda')).toBe(false)
+  })
+  it('truncates a long reason to the 500 characters the Input stores', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    h.engine.agenda(ticketId, 'check', 'x'.repeat(600), at)
+    const input = h.repo.tickets.get(ticketId)!.inputs.find(input => input.kind === 'agenda')!
+    expect(input.kind === 'agenda' && input.text).toBe('x'.repeat(500))
+  })
+})
