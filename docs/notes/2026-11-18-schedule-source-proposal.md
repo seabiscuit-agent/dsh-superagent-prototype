@@ -53,6 +53,10 @@
   `settingsView` 也只传 `kind?.facts?.(setup.deployment)`（`src/app/views/settings.ts:36`）；
   来源列表只渲染 `error` / `paused` 的健康条目（`src/client/source.tsx:103`）。要显示它得先给
   面板加「配置派生只读值」的能力，别在提案里假装已有。
+- **校验必须分两层**：`cron` / `timezone` 不要放进 `SourceKind.schema`。schema 失败会让
+  `SourceRegistry.resolve()` 把**整个实例**置为 `enabled: false`（config 回落默认值），一行笔误
+  就静默停掉所有定时任务。schema 只查字段、`key` 格式/唯一、非空文本；cron 语法与时区在 watch
+  循环里按行求值，失败只让该行不触发 + 健康项点名。
 - `tests/bundle-patch.spec.ts:33-35` 硬断言 `cordis.patch.yml` 顶层 insert 的 id 顺序，新增插件行
   必须同步改这条断言。
 - `SourcePolicyPart.schema` 每个字段必须有 default，否则 `registry.policyPart()` 在 `safeParse`
