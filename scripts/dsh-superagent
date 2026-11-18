@@ -8,6 +8,10 @@ and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they ne
 `why <ticket-id>` prints one Ticket's timeline, the same rows its panel shows and `GET .../tickets/<id>/timeline`
 returns: 0 when it printed, 1 when the service did not answer, 3 when it still waits for setup, and 4 when no Ticket has
 that id. `--backfill` first derives the Facts the Ticket's stored rows still imply, writing each one once.
+
+`ls` lists the instances the panel registered. `start`, `stop`, `restart` and `status` take an instance name from that
+list; its profile, port, working directory and tmux session then come from the registry. An archived instance is refused:
+the panel marks the entry instance archived without moving its profile, so starting it would resurrect a retired service.
 """
 
 import argparse
@@ -42,6 +46,43 @@ def control(profile):
 def stopped(profile):
     """Return whether `profile` was intentionally stopped."""
     return (control(profile) / 'manually-stopped').exists()
+
+
+def registry_path():
+    """Return the panel registry every instance shares: `<dsh home>/spawner/instances.json`.
+
+    `DSH_SUPERAGENT_REGISTRY` overrides it. Inside a child instance `DSH_HOME` points at that instance's workspace,
+    whose registry the panel shares from the deploying home, so a missing file falls back to `~/.dsh/spawner`.
+    """
+    override = os.environ.get('DSH_SUPERAGENT_REGISTRY')
+    if override:
+        return Path(override)
+    home = Path(os.environ.get('DSH_HOME') or Path.home() / '.dsh')
+    local = home / 'spawner' / 'instances.json'
+    return local if local.exists() else Path.home() / '.dsh' / 'spawner' / 'instances.json'
+
+
+def registry():
+    """Return the rows the panel registered; an absent or malformed file reads as no instances."""
+    try:
+        data = json.loads(registry_path().read_text())
+    except (OSError, ValueError):
+        return []
+    rows = data.get('instances') if isinstance(data, dict) else None
+    return [row for row in rows if isinstance(row, dict) and row.get('profile')] if isinstance(rows, list) else []
+
+
+def instance(name):
+    """Return the registered instance called `name` (its name or its profile), or None."""
+    for row in registry():
+        if name in (row.get('name'), row.get('profile')):
+            return row
+    return None
+
+
+def archived(profile):
+    """Return whether the registry marks `profile`'s instance archived (an entry instance is marked without moving files)."""
+    return any(row.get('profile') == profile and row.get('archived') for row in registry())
 
 
 def serves(args, profile):
@@ -127,11 +168,28 @@ def outcome(pids, current):
 def status(args):
     pids = processes(args.profile)
     current = state(args.url) if pids else None
-    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
-                      'manually_stopped': stopped(args.profile), 'health': current and current['health'],
+    print(json.dumps({'pids': pids, 'cwd': str(args.cwd), 'url': args.url,
+                      'archived': args.archived,
+                      'manually_stopped': stopped(args.profile) or args.archived, 'health': current and current['health'],
                       'errors': current and current['errors'], 'setup': current and current['setup'],
                       'feishu': current and current['feishu']}, ensure_ascii=False, indent=2))
     return outcome(pids, current)
+
+
+def ls():
+    """Print the registry as a table: name, port, state and URL; exit 0 whether or not any instance is registered."""
+    rows = registry()
+    if not rows:
+        print(f'No instances are registered in {registry_path()}.')
+        return 0
+    width = max(len(str(row.get('name') or row['profile'])) for row in rows + [{'name': 'NAME', 'profile': 'NAME'}])
+    print(f'{"NAME":<{width}}  PORT  STATE     URL')
+    for row in rows:
+        port = str(row.get('port') or '-')
+        state_name = 'archived' if row.get('archived') else ('running' if processes(row['profile']) else 'stopped')
+        url = f'http://127.0.0.1:{port}/' if port != '-' else ''
+        print(f'{str(row.get("name") or row["profile"]):<{width}}  {port:>4}  {state_name:<9} {url}')
+    return 0
 
 
 def stop(args, intentional=True):
@@ -162,7 +220,7 @@ def prune_logs(profile):
 
 
 def start(args):
-    session = 'dsh-' + args.profile
+    session = args.session
     pids = processes(args.profile)
     if len(pids) > 1:
         raise RuntimeError('Multiple dsh-superagent processes found; refusing to start another.')
@@ -179,11 +237,12 @@ def start(args):
         log.touch()
         prune_logs(args.profile)
         # `exec` replaces the shell so the pane PID printed by tmux is the DSH service process itself.
-        command = ('umask 077; exec ' + shlex.join([dsh, '--profile', args.profile, '--no-open'])
+        home = f'DSH_HOME={shlex.quote(str(args.dsh_home))} ' if args.dsh_home else ''
+        command = ('umask 077; exec ' + home + shlex.join([dsh, '--profile', args.profile, '--no-open'])
                    + ' >> ' + shlex.quote(str(log)) + ' 2>&1')
         # Reuse an existing tmux session without disturbing other windows.
         target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
-        pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(ROOT), command],
+        pane = subprocess.run(['tmux', *target, '-d', '-P', '-F', '#{pane_pid}', '-n', 'server', '-c', str(args.cwd), command],
                               check=True, capture_output=True, text=True).stdout.strip()
         if pane.isdigit():
             (control(args.profile) / 'service.pid').write_text(pane + '\n')
@@ -273,10 +332,13 @@ def parser():
     shared.add_argument('--respect-stop', action='store_true', default=argparse.SUPPRESS,
                         help='For monitoring: never start or restart after an intentional stop.')
     top = argparse.ArgumentParser(description=__doc__, parents=[shared], formatter_class=argparse.RawDescriptionHelpFormatter)
-    actions = top.add_subparsers(dest='action', required=True, metavar='{start,stop,restart,status,why}')
+    actions = top.add_subparsers(dest='action', metavar='{start,stop,restart,status,ls,why}')
     for name, summary in (('start', 'start the service'), ('stop', 'stop the service'),
                           ('restart', 'stop, then start the service'), ('status', 'print its state and exit code')):
-        actions.add_parser(name, parents=[shared], help=summary, description=summary)
+        action = actions.add_parser(name, parents=[shared], help=summary, description=summary)
+        action.add_argument('name', nargs='?',
+                            help='an instance name from `ls`; its profile, port, directory and tmux session come from the registry')
+    actions.add_parser('ls', help='list the instances the panel registered')
     ask = actions.add_parser('why', parents=[shared], help="print one Ticket's timeline",
                              description="Print one Ticket's timeline, oldest first, as its panel shows it.")
     ask.add_argument('ticket_id', help='the Ticket id')
@@ -287,18 +349,40 @@ def parser():
 
 
 def settings(args):
-    """Fill the shared options from the environment, the way the four service actions always read them."""
-    args.profile = getattr(args, 'profile', None) or os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent'
-    args.url = getattr(args, 'url', None) or os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082'
+    """Fill the shared options from an optional registry instance, then the environment and the old defaults."""
+    entry, name = None, getattr(args, 'name', None)
+    if name:
+        entry = instance(name)
+        if entry is None:
+            raise RuntimeError(f'No instance named {name} is registered in {registry_path()}; '
+                               'run `dsh-superagent ls` to list them.')
+        if getattr(args, 'profile', None) and args.profile != entry['profile']:
+            raise RuntimeError(f'{name} is registered with profile {entry["profile"]}, not {args.profile}.')
+    args.profile = (entry or {}).get('profile') or getattr(args, 'profile', None) or os.environ.get('DSH_SUPERAGENT_PROFILE') or 'superagent'
+    args.url = (getattr(args, 'url', None) or os.environ.get('DSH_SUPERAGENT_URL')
+                or (f'http://127.0.0.1:{entry["port"]}' if entry and entry.get('port') else 'http://127.0.0.1:3082'))
     args.timeout = getattr(args, 'timeout', None) or 60
     args.stop_timeout = getattr(args, 'stop_timeout', None) or 300
     args.respect_stop = bool(getattr(args, 'respect_stop', False))
+    # A named instance runs where the panel put it, under the same DSH home it was created with.
+    args.cwd = Path(entry.get('workspace') or entry.get('dshHome')) if entry else ROOT
+    args.dsh_home = (entry or {}).get('dshHome') or (entry or {}).get('workspace')
+    args.session = (entry or {}).get('tmuxSession') or 'dsh-' + args.profile
+    args.archived = archived(args.profile)
     return args
 
 
 def main():
     top = parser()
-    args = settings(top.parse_args())
+    parsed = top.parse_args()
+    if parsed.action in (None, 'ls'):
+        code = ls()
+        if parsed.action is None:
+            print()
+            print(top.format_usage().strip())
+            print('Run `dsh-superagent --help` for the options; `dsh-superagent start <name>` starts a listed instance.')
+        return code
+    args = settings(parsed)
     if args.timeout <= 0 or args.stop_timeout <= 0:
         top.error('--timeout and --stop-timeout must be positive')
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', args.profile):
@@ -309,9 +393,17 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('Another dsh-superagent control operation is in progress.') from None
-        if args.respect_stop and args.action in ('start', 'restart') and stopped(args.profile):
-            print('Intentional stop is active; automatic recovery skipped.')
-            return 0
+        if args.respect_stop and args.action in ('start', 'restart'):
+            if stopped(args.profile):
+                print('Intentional stop is active; automatic recovery skipped.')
+                return 0
+            if args.archived:
+                print('The instance is archived; automatic recovery skipped.')
+                return 0
+        if args.action in ('start', 'restart') and args.archived:
+            # The panel marks the entry instance archived without moving its files: starting it would
+            # resurrect a retired service, so the CLI refuses and points at the restore action.
+            raise RuntimeError(f'{args.profile} is archived in {registry_path()}; restore it in the panel before starting it.')
         if args.action == 'why':
             return why(args)
         if args.action == 'status':
