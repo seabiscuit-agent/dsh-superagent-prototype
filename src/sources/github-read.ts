@@ -20,6 +20,10 @@ export function ciCounts(snapshot: CiSnapshot): { failed: number; running: numbe
     running: snapshot.checks.filter(check => check.status !== 'completed').length + statuses.filter(status => status.state === 'pending').length,
   }
 }
+/** The declared event of a CI transition a dispatch rule may match. */
+export type CiEvent = 'github.ci.failed' | 'github.ci.running' | 'github.ci.passed'
+export const ciEvent = (counts: { failed: number; running: number }): CiEvent =>
+  counts.failed ? 'github.ci.failed' : counts.running ? 'github.ci.running' : 'github.ci.passed'
 export function ciSummary(snapshot: CiSnapshot, where: string, read: string): string {
   const checks = snapshot.checks.map(check => ({ name: check.name, failed: FAILING.has(check.conclusion ?? ''), running: check.status !== 'completed' }))
   const statuses = (snapshot.statuses ?? []).map(status => ({ name: status.context, failed: FAILING.has(status.state), running: status.state === 'pending' }))

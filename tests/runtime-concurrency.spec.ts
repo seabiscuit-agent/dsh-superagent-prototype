@@ -927,7 +927,7 @@ describe('the Executor\'s parts', () => {
     expect(changed).not.toContain('person')
     expect(changed).not.toContain('v2')
     const mode = inputMessage({ id: 'i6', kind: 'policy-changed', at: '', from: 'v1', to: 'v2', effect: { proactive: false } })!
-    expect(mode).toContain('Work inferred from a rule is no longer accepted, as the accept mode is no longer auto')
+    expect(mode).toContain('Work inferred from a rule is no longer accepted')
     expect(mode).not.toContain('sender')
     expect(inputMessage({ id: 'i5', kind: 'resumed', at: '', triggerId: 'tr2' })).not.toContain('tr2')
     expect(inputMessage({ id: 'i4', kind: 'reopen', at: '' } as never)).toBeUndefined()

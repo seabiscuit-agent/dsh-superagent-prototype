@@ -43,7 +43,8 @@ function setup(strength: 'explicit' | 'inferred' = 'inferred', bodies = Array.fr
   }
   const assessor = new MasterAssessor(host)
   const policy: Policy = { version: 'v1', paused: false, evalTimeoutMs: 600_000, gate: () => ({ admissible: true, strength, basis: { via: 'followup' } }),
-    revalidate: () => true, admitsInferred: rules => rules.length > 0 }
+    revalidate: () => true, admitsInferred: rules => rules.length > 0, dispatch: () => ({ mode: 'auto', rules: [] }),
+    dispatchBasis: (_trigger, rule, basis) => ({ ...basis, via: 'dispatch', rule: rule.id, event: '', gate: { via: 'admission', cell: 'unlistedUnaddressed' } }) }
   const executor: Executor = { start: async () => {}, deliver: async () => {}, stop: async () => {} }
   const scope = { scope: () => ({ listened: true as const, observed: true }) }
   const outbox = { send: () => {}, status: () => undefined, withdraw: () => {} }

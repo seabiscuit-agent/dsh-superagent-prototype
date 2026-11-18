@@ -1,6 +1,6 @@
 /** Ports the core depends on. Sources, policies, assessors, executors, and channels are project-specific. */
-import type { Assignment, ChannelRef, Decision, DecisionKind, Mandate, MandateBasis, Strength, Thread, Ticket, TicketEndBy, TicketOutcome, Trigger }
-  from './model.ts'
+import type { AcceptMode, Assignment, ChannelRef, Decision, DecisionKind, DispatchRule, Mandate, MandateBasis, Strength, Thread, Ticket,
+  TicketEndBy, TicketOutcome, Trigger } from './model.ts'
 import type { Reason } from './reasons.ts'
 
 /** Gate admission result: either inadmissible with a reason code, or admissible with strength and MandateBasis. */
@@ -22,6 +22,10 @@ export interface Policy {
   revalidate(mandate: Mandate): boolean
   /** Whether an inferred candidate may be accepted on the rules its assessment matched: assessments accept, and each rule is enabled. */
   admitsInferred(rules: readonly string[]): boolean
+  /** The accept mode and the enabled dispatch rules matching the Trigger's source and declared event. */
+  dispatch(trigger: Trigger): { mode: AcceptMode; rules: DispatchRule[] }
+  /** The Mandate basis of an event a dispatch rule takes, keeping the gate path that admitted it so `revalidate` can re-check it. */
+  dispatchBasis(trigger: Trigger, rule: DispatchRule, basis: MandateBasis): MandateBasis
   /** How long an assessor may take before an eval is recorded as unavailable. */
   evalTimeoutMs: number
 }
@@ -100,6 +104,8 @@ export interface DomainEvents {
   /** A person dropped every ticket's Subscription, a ticket's Executor its own, or an ended ticket its Subscription on an on-demand Thread. */
   'thread.unsubscribed': { threadKey: string; ticketId: string; by: 'person' | 'executor' | 'ticket'; reason?: string }
   'trigger.requeued': { triggerId: string }
+  /** A matching event the dispatch rule's capacity held instead of creating a ticket; requeue retries it. */
+  'dispatch.held': { triggerId: string; rule: string; reason: 'capacity' }
   /** A person's follow-up that reached tickets and that an earlier version also queued for Eval left the queue. */
   'trigger.followup': { triggerId: string }
   /** A scheduled wake came due for a ticket that had ended or no longer exists, so it was dropped without resuming it. */

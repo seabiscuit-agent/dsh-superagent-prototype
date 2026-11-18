@@ -46,7 +46,12 @@ export class Engine {
    * Triggers that arrive while an Eval of that Thread runs wait together for the next one.
    */
   receive(trigger: Trigger, options: { assess?: boolean } = {}): ReceiveResult {
-    return this.repo.atomic(() => this.intake.receive(trigger, options))
+    return this.repo.atomic(() => {
+      const result = this.intake.receive(trigger, options)
+      // A declared machine event a dispatch rule matches is taken in the same transaction, before the next pass would assess it.
+      if (result === 'stored') this.evals.dispatch(trigger.id)
+      return result
+    })
   }
   /** Records how a local command prefix was dispatched, for observability; it neither changes a ticket nor carries its text. */
   signalFastPath(triggerId: string, result: 'accepted' | 'fallback' | 'discussion', ticketId?: string): void {

@@ -2,7 +2,7 @@
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
 import { liveTicket, threadKey } from './model.ts'
-import type { Decision, DecisionKind, Evaluation, Mandate, MandateBasis, Strength, Thread, Trigger } from './model.ts'
+import type { Decision, DecisionKind, Evaluation, Mandate, MandateBasis, Strength, Thread, Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome, Candidate, Policy } from './ports.ts'
 import { said, type Reason } from './reasons.ts'
 import { EnginePart, type EngineOptions } from './part.ts'
@@ -155,11 +155,72 @@ export class Evals extends EnginePart {
     return this.decideEval(thread, evaluation, outcome)
   }
   /**
-   * Queue a stored Trigger for a fresh Eval on its primary Thread and emit `trigger.requeued`; returns false while an Eval holds it.
+   * Take a matching machine Trigger by exactly one dispatch rule, without an assessment: a gate-only Evaluation and the
+   * ticket `accept` decides, or a held Trigger once the rule is at `maxActive`. A requeue retries a Trigger a full rule
+   * held; otherwise only a Trigger still queued on its Thread is taken.
+   * @returns `created` when it opened a ticket, `held` when the rule is full, `ambiguous` when several rules match (left to
+   *   the next Eval), or `none` when no rule takes it.
+   */
+  dispatch(triggerId: string, retry = false): 'created' | 'held' | 'ambiguous' | 'none' {
+    const trigger = this.repo.triggers.get(triggerId)
+    if (!trigger || trigger.human) return 'none'
+    const thread = this.repo.threads.get(threadKey(trigger.threads[0]!))
+    if (!thread) return 'none'
+    if (!retry && !thread.pending.includes(triggerId)) return 'none'
+    if (thread.evaluating?.triggerIds.includes(triggerId) || this.owners(trigger).length) return 'none'
+    const policy = this.policy()
+    if (policy.paused) return 'none'
+    const { mode, rules } = policy.dispatch(trigger)
+    if (mode !== 'auto' || !rules.length) return 'none'
+    const gate = policy.gate(trigger, thread, this.ticketsOnThread(thread))
+    if (!gate.admissible || gate.strength !== 'inferred') return 'none'
+    const at = this.now()
+    const save = (dispatch: TriggerDisposition['dispatch']): void => {
+      const disposition = this.repo.triggers.disposition(triggerId) ?? { fanout: [], at }
+      this.repo.triggers.saveDisposition(triggerId, { ...disposition, dispatch })
+    }
+    if (rules.length > 1) {
+      save({ result: 'ambiguous', rules: rules.map(rule => rule.id) })
+      this.remember('dispatch.fast_path', { triggerId, result: 'fallback' }, at)
+      return 'ambiguous'
+    }
+    const rule = rules[0]!
+    if (this.accepted(thread.key).has(triggerId)) return 'none'
+    const active = this.repo.tickets.open().filter(ticket => ticket.mandate.basis.via === 'dispatch' && ticket.mandate.basis.rule === rule.id).length
+    const dequeue = () => {
+      if (!thread.pending.includes(triggerId)) return
+      thread.pending = thread.pending.filter(id => id !== triggerId)
+      this.repo.threads.save(thread)
+    }
+    if (active >= rule.maxActive) {
+      dequeue()
+      save({ result: 'capacity', rule: rule.id, active })
+      this.remember('dispatch.held', { triggerId, rule: rule.id, reason: 'capacity' }, at)
+      return 'held'
+    }
+    dequeue()
+    const evaluation: Evaluation = { id: key('eval', thread.key, 'dispatch', triggerId, rule.id, at), threadKey: thread.key, triggerIds: [triggerId],
+      primary: triggerId, strength: 'inferred', actor: trigger.actor, basis: policy.dispatchBasis(trigger, rule, gate.basis), policyVersion: policy.version,
+      startedAt: at, deadline: at }
+    const outcome = { kind: 'accept' as const, title: rule.title, scope: rule.brief,
+      reason: { code: 'dispatchRule', values: { rule: rule.id, event: trigger.event ?? '' } } }
+    const decision = this.accept(thread, evaluation, outcome)
+    save({ result: 'created', rule: rule.id, ticketId: decision.ticketId! })
+    this.remember('dispatch.fast_path', { triggerId, ticketId: decision.ticketId!, result: 'accepted' }, at, decision.ticketId)
+    return 'created'
+  }
+  /**
+   * Queue a stored Trigger for a fresh Eval on its primary Thread and emit `trigger.requeued`; returns false while an Eval holds it
+   * or while the dispatch rule that held it for capacity is still full.
    * @throws UserError when the Trigger is unknown.
    */
   reevaluate(triggerId: string): boolean {
     const at = this.now()
+    const trigger = this.repo.triggers.get(triggerId)
+    if (!trigger) throw new UserError('unknownTrigger')
+    const dispatched = this.dispatch(triggerId, true)
+    if (dispatched === 'created') return true
+    if (dispatched === 'held') return false
     if (!this.requeue(triggerId)) return false
     this.remember('trigger.requeued', { triggerId }, at)
     return true

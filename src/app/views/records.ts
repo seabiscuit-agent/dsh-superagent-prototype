@@ -98,9 +98,11 @@ export function triggerView(view: Snapshot, trigger: Trigger, threadDecisions?: 
     || (!!decision && !decided)
   const requeue = trigger.human && !queued && !evaluating && unjudged
   return { id: trigger.id, source: trigger.source, actor: view.actor(trigger.actor, trigger.human), human: trigger.human, at: trigger.at,
+    ...(trigger.event ? { event: trigger.event } : {}),
     text: plain(readable(trigger.text), true),
     preview: preview(trigger.text), url: trigger.url, threads: trigger.threads.map(threadKey), actions: { requeue },
     disposition: { queued, evaluating, delivered, filtered: disposition?.filtered, fanout: disposition?.fanout ?? [],
+      ...(disposition?.dispatch ? { dispatch: disposition.dispatch } : {}),
       handbacks: (disposition?.handbacks ?? []).map(item => ({ ...item,
         title: store.tickets.get(item.ticketId)?.title ?? item.ticketId })),
       decision: decision ? { id: decision.id, outcome: outcomeOf(decision), reason: decision.reason, ticketId: decision.ticketId }
