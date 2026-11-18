@@ -249,10 +249,20 @@ it('ignores a proactive candidate from its card beside other decisions, marked s
 it('returns where a reply stands: sent, or dropped when its conversation can no longer receive it', async () => {
   const { ticket, sessionId } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
   await h.runTool(sessionId, 'orchestrator_report', { state: 'ready', summary: 'Done.' })
-  const reply = (text: string) => h.runTool(h.runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', text })
+  const reply = (text: string) => h.runTool(h.runtime.masterId, 'orchestrator_reply', { ticket_id: ticket.id, purpose: 'result', conclusion: text })
   expect(await reply('修好了。')).toEqual({ status: 'sent' })
   vi.mocked(Commands.prototype.lark).mockRejectedValue(new CliError('the message was withdrawn', 230011))
   expect(await reply('修好了，请看 PR。')).toEqual({ status: 'dropped' })
+})
+
+it('refuses a result without a conclusion and attention without a recommendation', async () => {
+  const { ticket } = await h.acceptedTicket(feishu('1', '@bot 修一下回归'))
+  await h.runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'ready', summary: 'Done.' })
+  await expect(h.runTool(h.runtime.masterId, 'orchestrator_reply',
+    { ticket_id: ticket.id, purpose: 'result', text: '已提交 PR #9。' })).rejects.toThrow('needs conclusion')
+  await expect(h.runTool(h.runtime.masterId, 'orchestrator_reply',
+    { ticket_id: ticket.id, purpose: 'attention', human_action: '要不要也改桌面端？', text: '要不要也改桌面端？' }))
+    .rejects.toThrow('needs recommendation')
 })
 
 it('checks an acknowledgement against the IM word limit, not a character count', async () => {

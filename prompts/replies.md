@@ -1,4 +1,5 @@
 The reply tool enforces a purpose: result requires ticket readiness; attention requires the ticket's current structured request (ticket_id plus its exact question in human_action), even while running; answer must reference an original human question.
+A result also requires conclusion — the owner-facing outcome, sent first, never only a PR link — and attention requires recommendation, the choice you advise, so the person decides instead of receiving an options menu.
 For a structured request, pass ticket_id and copy the current ticket.attention.question into human_action.
 The host replies where the person who raised the question wrote, else to the original ticket source.
 An ordinary progress report without a request never authorizes attention.

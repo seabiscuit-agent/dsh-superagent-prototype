@@ -169,7 +169,7 @@ it('renders a local result reply into the main session as a notice row', async (
     const ticketId = (result.ticket as { ticket_id: string }).ticket_id
     await host.runTool(`worker-${ticketId}`, 'orchestrator_report', { state: 'ready', summary: 'Done.' })
     const sent = await host.runTool(host.runtime.masterId, 'orchestrator_reply',
-      { purpose: 'result', ticket_id: ticketId, text: 'Submitted PR #9, ready for review.' }) as { status: string }
+      { purpose: 'result', ticket_id: ticketId, conclusion: 'Submitted PR #9, ready for review.' }) as { status: string }
     expect(sent.status).toBe('sent')
     const master = host.agents.get(host.runtime.masterId)!
     const summaries = master.inject.mock.calls.map(([injected]) => (injected.source as { summary?: string } | undefined)?.summary ?? '')

@@ -242,16 +242,31 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_reply',
-      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
+      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. A result needs conclusion: the owner-facing outcome, sent first; a PR link alone is not it. Attention needs recommendation: the choice you advise, so the owner decides instead of receiving an options menu. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
       schema: z.object({
         trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
         ticket_id: z.string().optional(),
         purpose: z.enum(['answer', 'result', 'attention']),
         human_action: z.string().trim().min(1).optional().describe('Required for attention: the ticket\'s current attention question.'),
-        text: z.string().min(1).max(20000),
-      }).strict(),
+        conclusion: z.string().trim().min(1).max(4000).optional()
+          .describe('Required for result: what changed or was found and what the owner can now use, review or decide; it opens the message.'),
+        recommendation: z.string().trim().min(1).max(2000).optional()
+          .describe('Required for attention: the choice you advise, in one sentence; the message ends with it.'),
+        text: z.string().trim().min(1).max(20000).optional()
+          .describe('The rest of an answer or result body, or the question an attention message asks.'),
+      }).strict().superRefine((args, ctx) => {
+        const missing = (path: 'conclusion' | 'recommendation' | 'text', message: string) =>
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message })
+        if (args.purpose === 'result' && !args.conclusion) missing('conclusion', 'a result reply needs conclusion: the owner-facing outcome')
+        if (args.purpose !== 'result' && !args.text) missing('text', 'this reply needs text')
+        if (args.purpose === 'attention' && !args.recommendation) missing('recommendation', 'an attention reply needs recommendation: the choice you advise')
+      }),
       execute: async (args, _signal, turn) => {
-        const reply = host.engine.reply({ purpose: args.purpose, text: args.text, ...(args.trigger_id ? { triggerId: args.trigger_id } : {}),
+        const label = args.recommendation && /[\u4e00-\u9fff]/.test(args.recommendation) ? '建议：' : 'Recommendation: '
+        const text = args.purpose === 'result'
+          ? [args.conclusion, args.text].filter(Boolean).join('\n\n')
+          : args.purpose === 'attention' ? `${args.text}\n\n${label}${args.recommendation}` : args.text!
+        const reply = host.engine.reply({ purpose: args.purpose, text, ...(args.trigger_id ? { triggerId: args.trigger_id } : {}),
           ...(args.ticket_id ? { ticketId: args.ticket_id } : {}), ...(args.human_action ? { question: args.human_action } : {}) })
         await host.sendReplies()
         const status = host.store.replyStatus(reply.id) ?? reply.status
