@@ -1,7 +1,7 @@
 /** Tickets: their lifecycle from an accept to their end, their Subscriptions and their Inputs. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, latestReport, liveTicket, readUntil, runningAssignment, settled, threadKey, waitsForPerson, waitsForQuestion } from './model.ts'
+import { latestAssignment, latestReport, liveTicket, pendingAnswer, readUntil, runningAssignment, settled, threadKey, waitsForPerson, waitsForQuestion } from './model.ts'
 import type { Assignment, ChannelRef, Evaluation, Follow, Mandate, PolicyEffect, ThreadRef, Ticket, TicketEndBy, TicketInput, TicketOutcome,
   Trigger, TriggerDisposition } from './model.ts'
 import type { AssessmentOutcome } from './ports.ts'
@@ -364,6 +364,11 @@ export class Tickets extends EnginePart {
     // Open questions close with the ticket; a person's unsent attention is withdrawn, and no answer Input follows.
     for (const question of ticket.questions ?? []) {
       if (question.resolution !== undefined) continue
+      // A pending answer never reaches the worker: the end withdraws it and keeps it for the audit.
+      if (pendingAnswer(question)) {
+        question.withdrawnAnswer = question.answer; question.withdrawnAt = ticket.updatedAt
+        delete question.answer; delete question.answeredBy; delete question.answeredAt; delete question.withdrawableUntil
+      }
       question.resolution = 'withdrawn'; question.resolvedAt = ticket.updatedAt
       this.fact('question.withdrawn', { ticketId, questionId: question.id, by: 'ticket' }, ticket.updatedAt, ticketId)
       if (question.to === 'person') this.replies.withdrawAttention(question.id)

@@ -17,6 +17,7 @@ For an incomplete draft report blocked and name what remains.
 Do not leave the question only in summary, GitHub or the Session and wait.
 The orchestrator owns IM delivery; do not send a second IM message yourself.
 Ask through orchestrator_report: `question_for: 'orchestrator'` for a decision the mandate, context and policy settle, `question_for: 'person'` only for an owner decision; resolve one that no longer needs an answer.
+An option question may be answered on the ticket panel: treat the answer Input as formal, a correction as superseding it, and never await a withdrawn answer.
 Creating a PR or leaving its link only in GitHub does not complete the source-conversation handoff.
 
 Read repository AGENTS.md. Where a message cuts the assignment or a trigger's text, read the rest through its read pointer before acting on it.

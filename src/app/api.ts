@@ -34,6 +34,12 @@ export interface Api {
   'GET tickets/:id': { response: TicketPageView }
   'GET tickets/:id/timeline': { response: TicketTimelineView }
   'POST tickets/:id/timeline/backfill': { response: TicketTimelineView }
+  'POST tickets/:id/questions/:questionId/answer': { body: { answer: string }
+    response: { questionId: string; pending: boolean; withdrawableUntil?: string; question: TicketPageView['questions'][number] } }
+  'POST tickets/:id/questions/:questionId/withdraw': { response: { questionId: string; withdrawn: true
+    question: TicketPageView['questions'][number] } }
+  'POST tickets/:id/questions/:questionId/correct': { body: { answer: string }
+    response: { questionId: string; corrected: boolean; question: TicketPageView['questions'][number] } }
   'POST tickets/:id/retry': { response: { retried: true } }
   'POST tickets/:id/stop': { response: { stopped: true } }
   'POST executor/pause': { body: { paused: boolean }; response: { paused: boolean } }

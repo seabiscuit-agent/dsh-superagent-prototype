@@ -51,7 +51,10 @@ function summary(fact: Fact): string {
     case 'trigger.followup': return `follow-up trigger ${field(data, 'triggerId')} considered`
     case 'agenda.dropped': return `scheduled wake ${field(data, 'key')} dropped: ${field(data, 'reason')}`
     case 'dispatch.fast_path': return `fast path ${field(data, 'result')} for trigger ${field(data, 'triggerId')}`
+    case 'question.answer-pending': return `question ${field(data, 'questionId')} answer pending until ${field(data, 'withdrawableUntil')}`
     case 'question.answered': return `question ${field(data, 'questionId')} answered by ${field(data, 'by')}`
+    case 'question.corrected': return `question ${field(data, 'questionId')} answer corrected by ${field(data, 'by')}`
+    case 'question.answer-ignored': return `question ${field(data, 'questionId')} answer not adopted: ${field(data, 'reason')}`
     case 'question.escalated': return `question ${field(data, 'questionId')} escalated: ${field(data, 'reason')}`
     case 'question.resolved': return `question ${field(data, 'questionId')} resolved`
     case 'question.withdrawn': return `question ${field(data, 'questionId')} withdrawn by ${field(data, 'by')}`
@@ -99,8 +102,17 @@ function derived(ticket: Ticket): Fact[] {
       reason: assignment.endedReason ?? '', key: `assignment.ended:${assignment.id}` })
   }
   for (const question of ticket.questions ?? []) {
-    if (question.answeredAt) add('question.answered', question.answeredAt, { questionId: question.id, by: question.answeredBy ?? '',
+    if (question.correctedAt) add('question.corrected', question.correctedAt, { questionId: question.id, by: 'person',
+      key: `question.corrected:${question.id}` })
+    if (question.committedAt) add('question.answered', question.committedAt, { questionId: question.id, by: question.answeredBy ?? '',
       key: `question.answered:${question.id}` })
+    else if (question.answer !== undefined && question.withdrawableUntil)
+      add('question.answer-pending', question.answeredAt ?? null, { questionId: question.id,
+        withdrawableUntil: question.withdrawableUntil, key: `question.answer-pending:${question.id}` })
+    else if (question.answeredAt && question.resolution === 'answered') add('question.answered', question.answeredAt, {
+      questionId: question.id, by: question.answeredBy ?? '', key: `question.answered:${question.id}` })
+    if (question.withdrawnAt && question.resolution !== 'withdrawn') add('question.withdrawn', question.withdrawnAt, {
+      questionId: question.id, by: 'person', key: `question.withdrawn:${question.id}` })
     else if (question.resolution === 'withdrawn') add('question.withdrawn', question.resolvedAt ?? null, { questionId: question.id,
       by: 'ticket', key: `question.withdrawn:${question.id}` })
     else if (question.resolvedAt) add('question.resolved', question.resolvedAt, { questionId: question.id,

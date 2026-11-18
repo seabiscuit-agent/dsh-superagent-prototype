@@ -380,3 +380,13 @@ a.dt-btn, a.dt-btn:hover { text-decoration: none; }
 .dt-admission-slot { display: inline-flex; flex: none; width: 16px; }
 .dt-info-warn { color: var(--dsw-alias-state-warn-primary); }
 .dt-field-segmented { max-width: 240px; }
+
+/* Worker questions: answer options, the pending withdraw window, and the withdrawn/corrected audit. */
+.dt-question { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; font-size: 13px; line-height: 20px; background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 7%, transparent); overflow-wrap: anywhere; }
+.dt-question-blocking { background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 13%, transparent); }
+.dt-question-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dt-question-context, .dt-question-state { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--dsw-alias-label-secondary); }
+.dt-question-answer { display: flex; align-items: baseline; gap: 6px; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, transparent); }
+.dt-question-options { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.dt-question-history { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+.dt-question + .dt-question { margin-top: 8px; }

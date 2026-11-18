@@ -28,7 +28,7 @@ import { settingsView } from './views/settings.ts'
 import { sourcesStatus, type SetupState } from './views/sources.ts'
 import { decisionList, search, threadDetail, threadList } from './views/threads.ts'
 import { backfillTimeline, ticketTimeline } from './views/timeline.ts'
-import { executorLoad, ticketDetail, ticketList } from './views/tickets.ts'
+import { executorLoad, questionDetail, ticketDetail, ticketList } from './views/tickets.ts'
 
 export interface HttpHost {
   readonly store: Store
@@ -82,6 +82,19 @@ export function sameOrigin(req: Pick<IncomingMessage, 'headers'>, port: number):
   return req.headers['x-orchestrator-request'] === '1' && (req.headers.origin === undefined || req.headers.origin === `http://${host}`)
 }
 /** Maps errors to HTTP status codes and structured payloads that the panel localizes in the interface language. */
+const CONFLICT_CODES: ReadonlySet<string> = new Set(['ticketEnded', 'notOpen', 'answerPending', 'alreadyAnswered',
+  'withdrawExpired', 'alreadyCommitted', 'notWithdrawable', 'notAnswered', 'withdrawInstead'])
+/** A refused question action that conflicts with the question's current state, answered as HTTP 409. */
+class ConflictError extends Error {
+  constructor(readonly refusal: UserError) { super(refusal.message) }
+}
+/** Runs a panel question action, reporting its state conflicts as 409 while validation refusals stay 400. */
+function questionAction<T>(run: () => T): T {
+  try { return run() } catch (error) {
+    if (error instanceof UserError && CONFLICT_CODES.has(error.code)) throw new ConflictError(error)
+    throw error
+  }
+}
 function failure(error: unknown): [number, Record<string, unknown>] {
   if (error instanceof z.ZodError) {
     const issues = error.issues.map(issue => ({ path: issue.path.join('.'), message: issue.message }))
@@ -89,6 +102,7 @@ function failure(error: unknown): [number, Record<string, unknown>] {
   }
   if (error instanceof SetupError) return [400, { error: error.message, setup: error.problem }]
   if (error instanceof RouteError) return [error.status, { error: error.message }]
+  if (error instanceof ConflictError) return [409, { error: error.refusal.message, code: error.refusal.code, values: error.refusal.values }]
   if (error instanceof UserError) return [error.missing ? 404 : 400, { error: error.message, code: error.code, values: error.values }]
   if (error instanceof SettingsConflict || error instanceof PromptConflict) return [409, { error: error.message }]
   return [500, { error: error instanceof Error ? error.message : String(error) }]
@@ -117,6 +131,13 @@ const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.con
   problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
 export type StateView = ReturnType<typeof stateView>
 /** Builds a ticket's detail view; `environment` is empty while waiting for setup because it requires the resolved deployment. */
+/** The question as it reads after an action, for the panel's immediate re-render. */
+function refreshedQuestion(runtime: HttpHost, ticketId: string, questionId: string) {
+  const ticket = runtime.store.tickets.get(ticketId)
+  const question = ticket?.questions?.find(item => item.id === questionId)
+  if (!ticket || !question) throw new RouteError(404, 'Question not found')
+  return questionDetail(views(runtime), ticket, question)
+}
 function ticketPage(runtime: HttpHost, id: string) {
   const detail = ticketDetail(views(runtime), id), ticket = runtime.store.tickets.get(id)
   if (!detail || !ticket) throw new RouteError(404, 'Ticket not found')
@@ -209,6 +230,23 @@ function routes(runtime: HttpHost): Routes {
     'POST tickets/:id/timeline/backfill': ({ params }) => ticketTimelineBackfill(runtime, params.id),
     'POST tickets/:id/retry': ({ params }) => { const id = ticket(params.id); runtime.engine.retryTicket(id); return { retried: true } },
     'POST tickets/:id/stop': ({ params }) => { const id = ticket(params.id); runtime.engine.stopTicket(id); return { stopped: true } },
+    'POST tickets/:id/questions/:questionId/answer': async ({ params, body }) => {
+      const { answer } = z.object({ answer: z.string() }).strict().parse(await body())
+      const id = ticket(params.id)
+      return questionAction(() => ({ ...runtime.engine.answerPersonQuestion(id, params.questionId, answer, { entry: 'panel' }),
+        question: refreshedQuestion(runtime, id, params.questionId) }))
+    },
+    'POST tickets/:id/questions/:questionId/withdraw': ({ params }) => {
+      const id = ticket(params.id)
+      return questionAction(() => ({ ...runtime.engine.withdrawAnswer(id, params.questionId),
+        question: refreshedQuestion(runtime, id, params.questionId) }))
+    },
+    'POST tickets/:id/questions/:questionId/correct': async ({ params, body }) => {
+      const { answer } = z.object({ answer: z.string() }).strict().parse(await body())
+      const id = ticket(params.id)
+      return questionAction(() => ({ ...runtime.engine.correctAnswer(id, params.questionId, answer, 'panel'),
+        question: refreshedQuestion(runtime, id, params.questionId) }))
+    },
     'POST executor/pause': async ({ body }) => runtime.settings.pause(z.object({ paused: z.boolean() }).parse(await body()).paused, 'panel'),
     'PUT settings/:block': async ({ params, body }) => {
       const block = SettingsBlockSchema.parse(params.block)

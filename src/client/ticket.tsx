@@ -1,7 +1,7 @@
 /** Ticket detail page: stage and actions, Mandate details, undelivered/delivered Inputs, subscribed Threads, and Assignments. */
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { ApiError, usePoll, type TicketPageView, type TicketTimelineView } from './api.ts'
-import { DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
+import { Button, DisclosureRow, Dot, Icon, Tag, type IconName } from './controls.tsx'
 import { decisionMark, reportDot, ticketMark } from './marks.ts'
 import { usePanel } from './provider.tsx'
 import { settingsRoute } from './route.ts'
@@ -136,6 +136,104 @@ function MandateDetails({ ticket, actor }: { ticket: TicketPageView; actor: stri
   </Section>
 }
 
+type Question = TicketPageView['questions'][number]
+type QuestionState = 'open' | 'pending' | 'answered' | 'withdrawn' | 'resolved'
+function questionState(question: Question): QuestionState {
+  if (question.resolution === 'resolved') return 'resolved'
+  if (question.resolution === 'withdrawn') return 'withdrawn'
+  if (question.resolution === 'answered') return 'answered'
+  return question.answer !== undefined ? 'pending' : 'open'
+}
+function secondsLeft(until: string): number {
+  return Math.max(0, Math.ceil((Date.parse(until) - Date.now()) / 1000))
+}
+/** Counts down the withdraw window from the host's deadline; the page clock is not a second source of answer state. */
+function Countdown({ until }: { until: string }) {
+  const { t } = usePanel()
+  const [left, setLeft] = useState(() => secondsLeft(until))
+  useEffect(() => {
+    setLeft(secondsLeft(until))
+    const timer = setInterval(() => setLeft(secondsLeft(until)), 1000)
+    return () => clearInterval(timer)
+  }, [until])
+  return <span>{left > 0 ? t('questionPending', { seconds: String(left) }) : t('questionCommitting')}</span>
+}
+/**
+ * One worker question on the Ticket page.
+ * Clicking an option is the formal answer; while it is pending the worker has not seen it, so it can still be withdrawn.
+ */
+function QuestionCard({ ticket, question, onChanged }: {
+  ticket: TicketPageView; question: Question; onChanged: () => Promise<unknown>
+}) {
+  const { t, call } = usePanel()
+  const [busy, setBusy] = useState<string>()
+  const [failure, setFailure] = useState<string>()
+  const person = question.to === 'person'
+  const state = questionState(question)
+  const options = question.options ?? []
+  const channel = ticket.channels[0]
+  const submit = async (action: 'answer' | 'correct' | 'withdraw', answer?: string) => {
+    if (busy) return
+    setBusy(action)
+    setFailure(undefined)
+    try {
+      if (action === 'withdraw') await call('POST tickets/:id/questions/:questionId/withdraw', { id: ticket.id, questionId: question.id })
+      else if (action === 'correct') await call('POST tickets/:id/questions/:questionId/correct', { id: ticket.id, questionId: question.id,
+        body: { answer: answer ?? '' } })
+      else await call('POST tickets/:id/questions/:questionId/answer', { id: ticket.id, questionId: question.id, body: { answer: answer ?? '' } })
+      await onChanged()
+    } catch (error) {
+      setFailure(error instanceof ApiError ? error.message : String(error))
+    } finally { setBusy(undefined) }
+  }
+  return <div className={`dt-question${question.blocking ? ' dt-question-blocking' : ''}`}>
+    <div className="dt-question-head">
+      <span className="dt-banner-label">{t(person ? 'attentionPrefix' : 'orchestratorQuestionPrefix')}</span>
+      {question.blocking && <Tag tone="warning">{t('questionBlocking')}</Tag>}
+      {question.recommend && <Tag tone="info">{t('questionRecommend', { option: question.recommend })}</Tag>}
+    </div>
+    <MarkdownLite text={question.question} />
+    {question.context && <div className="dt-question-context"><MarkdownLite text={question.context} /></div>}
+    {state === 'withdrawn' && question.withdrawnAnswer === undefined && <div className="dt-question-state">
+      <Tag tone="quiet">{t('questionWithdrawn')}</Tag>
+    </div>}
+    {question.withdrawnAnswer !== undefined && <div className="dt-question-state">
+      <Tag tone="quiet">{t('questionWithdrawn')}</Tag>{t('questionWithdrawnAnswer', { answer: question.withdrawnAnswer })}
+    </div>}
+    {state === 'pending' && <div className="dt-question-state">
+      {question.withdrawableUntil && <Countdown until={question.withdrawableUntil} />}
+      {question.canWithdraw && <Button size="sm" variant="ghost" disabled={busy !== undefined}
+        onClick={() => void submit('withdraw')}>{t('questionWithdraw')}</Button>}
+    </div>}
+    {(state === 'pending' || state === 'answered') && question.answer !== undefined && <div className="dt-question-answer">
+      <span className="dt-banner-label">{t('questionAnswering')}</span>{question.answer}
+    </div>}
+    {state === 'answered' && <div className="dt-row-meta">
+      <span>{question.correctedAt ? t('questionCorrected') : t(question.answeredBy === 'orchestrator'
+        ? 'questionAnsweredByOrchestrator' : 'questionAnsweredByPerson')}</span>
+      {question.answeredAt && <When at={question.answeredAt} />}
+      {question.basis && <span>{question.basis}</span>}
+    </div>}
+    {state === 'resolved' && <div className="dt-question-state"><Tag tone="quiet">{t('questionResolved')}</Tag></div>}
+    {question.corrections?.length ? <div className="dt-question-history">{question.corrections.map((item, index) =>
+      <div key={index} className="dt-row-meta"><span>{t('questionCorrection', { number: String(index + 1) })}</span>
+        <span>{item.text}</span><When at={item.at} /></div>)}</div> : null}
+    {person && options.length > 0 && (question.canAnswer || question.canCorrect) && <div className="dt-question-options">
+      {question.canCorrect && <span className="dt-row-meta">{t('questionCorrect')}</span>}
+      {options.map(option => <Button key={option} size="sm" variant={option === question.recommend ? 'primary' : 'outline'}
+        disabled={busy !== undefined} onClick={() => void submit(question.canCorrect ? 'correct' : 'answer', option)}>
+        {option}
+      </Button>)}
+    </div>}
+    {person && options.length === 0 && <Hint>{t('questionNoOptions')}</Hint>}
+    {person && ticket.ended && question.canAnswer && <Hint>{t('questionEnded')}</Hint>}
+    {person && channel?.url && <div className="dt-banner-actions">
+      <ActionLink href={channel.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source', channel.source) })}</ActionLink>
+    </div>}
+    {failure && <Hint>{t('questionAnswerFailed', { reason: failure })}</Hint>}
+  </div>
+}
+
 export function TicketPage({ id }: { id: string }) {
   const { t, call } = usePanel()
   const { data, error, reload } = usePoll(() => call('GET tickets/:id', { id }), [id])
@@ -155,7 +253,6 @@ export function TicketPage({ id }: { id: string }) {
       t('lang'))
     return reason ? t('endedAt', { time, outcome, reason }) : t('endedAtShort', { time, outcome })
   })()
-  const channel = data.channels[0]
   return <>
     <PageHead title={data.title}>
       {opening?.url && <ActionLink href={opening.url}>{t('openThread', { source: valueLabel(t, 'source', opening.source) })}</ActionLink>}
@@ -172,12 +269,7 @@ export function TicketPage({ id }: { id: string }) {
       <LabelValue label={t('ticketUpdatedLabel')} value={when(data.updatedAt, t('lang'))} />
     </div>
     {ended && <Hint>{ended}</Hint>}
-    {(data.questions ?? []).filter(question => question.blocking).map(question => <div className="dt-banner" key={question.id}>
-      <span className="dt-banner-label">{t(question.to === 'person' ? 'attentionPrefix' : 'orchestratorQuestionPrefix')}</span>
-      <MarkdownLite text={question.question} />
-      {question.to === 'person' && channel && <div className="dt-banner-actions">
-        <ActionLink href={channel.url} icon="message">{t('answerIn', { source: valueLabel(t, 'source', channel.source) })}</ActionLink>
-      </div>}</div>)}
+    {data.questions.map(question => <QuestionCard key={question.id} ticket={data} question={question} onChanged={reload} />)}
     {/* Ordinary progress stays in the Session/Channels; only a report that halted work (blocked/failed) is shown here. */}
     {data.actions.retry && data.summary && <p className={`dt-banner${failed ? ' dt-danger' : ''}${failedText ? ' dt-mono' : ''}`}>
       <span className="dt-banner-label">{t(failed ? 'failedPrefix' : 'blockedPrefix')}</span>{data.summary}

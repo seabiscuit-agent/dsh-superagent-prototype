@@ -23,6 +23,8 @@ export interface EffectPayloads {
   reply: Record<string, never>
   /** Wake a ticket at a time the main Session scheduled; the key is `agendaKey(ticketId, name)`. */
   agenda: { ticketId: string; key: string; reason: string; at: string }
+  /** Commit a person's pending answer when its withdraw window ends; the key is the Question ID. */
+  answer: { ticketId: string; questionId: string }
 }
 /** One scheduled wake's row identity: a ticket and a name it chose, which a later schedule replaces. */
 export const agendaKey = (ticketId: string, name: string): string => `ticket:${ticketId}:${name}`

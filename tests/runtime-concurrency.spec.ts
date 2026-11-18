@@ -930,6 +930,12 @@ describe('the Executor\'s parts', () => {
     expect(mode).toContain('Work inferred from a rule is no longer accepted')
     expect(mode).not.toContain('sender')
     expect(inputMessage({ id: 'i5', kind: 'resumed', at: '', triggerId: 'tr2' })).not.toContain('tr2')
+    // A person's answer and a later correction are formal messages the worker can read and act on.
+    const answer = inputMessage({ id: 'i7', kind: 'answer', questionId: 'q1', text: '品牌蓝', answeredBy: 'person', at: '' })!
+    expect(answer).toContain('Answer from the person to question q1: 品牌蓝')
+    const correction = inputMessage({ id: 'i8', kind: 'answer', questionId: 'q1', text: '深灰', answeredBy: 'person', at: '', correction: true })!
+    expect(correction).toContain('Corrected answer from the person to question q1')
+    expect(correction).toContain('supersedes the earlier answer: 深灰')
     expect(inputMessage({ id: 'i4', kind: 'reopen', at: '' } as never)).toBeUndefined()
   })
   it('relays a worker\'s question, result or answer to the main Session, and keeps its progress internal', () => {

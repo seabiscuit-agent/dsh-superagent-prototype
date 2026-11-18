@@ -4,7 +4,7 @@ import { act } from 'react'
 import { expect, it } from 'vitest'
 import { en, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, all, find, tab, click, type, text, field, at } from './fixtures/panel.tsx'
-import { MEMBER, server, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
+import { MEMBER, questionRow, server, ticketDetail, ticketSummary, threadSummary } from './fixtures/panel-server.ts'
 
 usePanel()
 it('lists Tickets under Execution by who they wait on, with the Executor state and its pause as an action', async () => {
@@ -87,12 +87,14 @@ it('links a question to its Channel, folds consecutive automated messages among 
     trigger: { id: `c${id}`, actor: { source: 'github', id: '' }, human: false,
       preview: `CI of PR #42 at abc1234: 10 checks, ${failed} failed, 0 running.`, thread: 'github:42' } })
   const t1 = server.ticketDetails.t1!
-  server.ticketDetails.t1 = { ...t1, stage: 'person', action: 'answer', questions: [{ id: 'q1', from: 'worker', to: 'person', blocking: true, question: '需要确认按钮颜色', createdAt: '2026-09-22T00:06:00Z' }], inputs: [ci('i3',
+  server.ticketDetails.t1 = { ...t1, questions: [questionRow({ id: 'q1', question: '需要确认按钮颜色', createdAt: '2026-09-22T00:06:00Z',
+    options: [] })], inputs: [ci('i3',
     '2026-09-22T00:06:00Z', 1), ci('i2', '2026-09-22T00:05:00Z', 0)] }
   await mount()
   await click(all('.dt-open').find(button => button.textContent === '修复回归')!)
-  expect(all('.dt-banner a').map(link => [link.textContent, link.getAttribute('href')])).toEqual([['去飞书回答',
+  expect(all('.dt-question a').map(link => [link.textContent, link.getAttribute('href')])).toEqual([['去飞书回答',
     'https://applink.feishu.cn/client/chat/open?openChatId=oc_1']])
+  expect(text()).toContain(zh.questionNoOptions)
   await click('已送达的输入 · 2')
   expect(all('.dt-disclosure-body .dt-row-title').map(title => title.textContent)).toEqual(['自动通知：CI of PR #42 at abc1234: 10 checks, 1 failed, 0 running.'])
   await click('同一发送者之前还有 1 条自动消息')
@@ -108,6 +110,26 @@ it('links a question to its Channel, folds consecutive automated messages among 
   expect(document.querySelector('[role="tooltip"]')).toBeNull()
 })
 
+it('answers a person question from its options and withdraws the pending answer before delivery', async () => {
+  server.ticketDetails.t1 = { ...ticketDetail(), questions: [
+    questionRow({ id: 'q1', question: '需要确认按钮颜色', options: ['品牌蓝', '深灰'], recommend: '品牌蓝' }),
+    questionRow({ id: 'q2', to: 'orchestrator', question: '是否需要同时改注册页按钮？', options: [], canAnswer: false }),
+  ] }
+  await mount()
+  await click(all('.dt-open').find(button => button.textContent === '修复回归')!)
+  expect(text()).toContain('需要确认按钮颜色')
+  expect(text()).toContain('是否需要同时改注册页按钮？')
+  // Only the person's question offers its options; the orchestrator's stays a notice.
+  await click('品牌蓝')
+  expect(server.requests.find(request => request.path === 'tickets/t1/questions/q1/answer')).toMatchObject({ method: 'POST',
+    body: { answer: '品牌蓝' } })
+  expect(text()).toContain(`${zh.questionAnswering}品牌蓝`)
+  expect(text()).toContain('秒内可撤回')
+  await click(zh.questionWithdraw)
+  expect(server.requests.find(request => request.path === 'tickets/t1/questions/q1/withdraw')).toMatchObject({ method: 'POST' })
+  expect(text()).toContain(zh.questionWithdrawn)
+  expect(text()).toContain(`撤回的回答：品牌蓝`)
+})
 it('offers a Ticket awaiting review its review place and Session in the page head', async () => {
   const t1 = server.ticketDetails.t1!
   server.ticketDetails.t1 = { ...t1, stage: 'person', action: 'review', threads: [threadSummary(),

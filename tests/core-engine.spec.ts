@@ -1759,3 +1759,173 @@ describe('agenda wake', () => {
     expect(input.kind === 'agenda' && input.text).toBe('x'.repeat(500))
   })
 })
+
+describe('answers to person questions', () => {
+  function asked(h: ReturnType<typeof harness>, options = ['a', 'b']) {
+    const ticketId = accepted(h).ticketId!
+    const question = h.engine.report(ticketId, { state: 'blocked', summary: 'need a decision', question: 'Which?',
+      questionFor: 'person', options }).questions![0]!
+    return { ticketId, question }
+  }
+  const stored = (h: ReturnType<typeof harness>, ticketId: string) => h.repo.tickets.get(ticketId)!
+  it('holds a panel answer without an Input until the withdraw window ends, then commits it once', () => {
+    const h = harness()
+    const { ticketId, question } = asked(h)
+    const start = h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' })
+    expect(start).toMatchObject({ questionId: question.id, pending: true })
+    expect(start.withdrawableUntil).toBeDefined()
+    expect(stored(h, ticketId).questions![0]).toMatchObject({ answer: 'a', answeredBy: 'person',
+      withdrawableUntil: start.withdrawableUntil })
+    expect(stored(h, ticketId).questions![0]!.resolution).toBeUndefined()
+    expect(stored(h, ticketId).inputs.filter(input => input.kind === 'answer')).toHaveLength(0)
+    expect(() => h.engine.answerPersonQuestion(ticketId, question.id, 'b', { entry: 'panel' }))
+      .toThrow(new UserError('answerPending'))
+    h.tick(16)
+    expect(h.engine.commitAnswer(ticketId, question.id)).toEqual({ questionId: question.id, committed: true })
+    const answered = stored(h, ticketId).questions![0]!
+    expect(answered).toMatchObject({ answer: 'a', answeredBy: 'person', resolution: 'answered' })
+    expect(answered.committedAt).toBeDefined()
+    expect(answered.withdrawableUntil).toBeUndefined()
+    expect(stored(h, ticketId).inputs.filter(input => input.kind === 'answer')).toEqual([expect.objectContaining({
+      id: `question-answer:${question.id}`, kind: 'answer', text: 'a', answeredBy: 'person' })])
+    expect(h.engine.commitAnswer(ticketId, question.id)).toEqual({ questionId: question.id, committed: false })
+    expect(() => h.engine.withdrawAnswer(ticketId, question.id)).toThrow(new UserError('alreadyCommitted'))
+  })
+  it('withdraws only inside the window, keeps an audit, and lets the person answer again', () => {
+    const h = harness()
+    const { ticketId, question } = asked(h)
+    const first = h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' })
+    expect(h.engine.withdrawAnswer(ticketId, question.id)).toEqual({ questionId: question.id, withdrawn: true })
+    const withdrawn = stored(h, ticketId).questions![0]!
+    expect(withdrawn.withdrawnAnswer).toBe('a')
+    expect(withdrawn.answeredBy).toBeUndefined()
+    expect(withdrawn.withdrawnAt).toBeDefined()
+    expect(withdrawn.answer).toBeUndefined()
+    expect(withdrawn.withdrawableUntil).toBeUndefined()
+    expect(withdrawn.resolution).toBeUndefined()
+    expect(stored(h, ticketId).inputs.filter(input => input.kind === 'answer')).toHaveLength(0)
+    h.tick(3)
+    const again = h.engine.answerPersonQuestion(ticketId, question.id, 'b', { entry: 'panel' })
+    expect(again.pending).toBe(true)
+    expect(again.withdrawableUntil).not.toBe(first.withdrawableUntil)
+    expect(h.engine.withdrawAnswer(ticketId, question.id)).toEqual({ questionId: question.id, withdrawn: true })
+    h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' })
+    h.tick(16)
+    expect(() => h.engine.withdrawAnswer(ticketId, question.id)).toThrow(new UserError('withdrawExpired'))
+  })
+})
+
+describe('the single answer slot', () => {
+  function asked(h: ReturnType<typeof harness>, options = ['a', 'b']) {
+    const ticketId = accepted(h).ticketId!
+    const question = h.engine.report(ticketId, { state: 'blocked', summary: 'need a decision', question: 'Which?',
+      questionFor: 'person', options }).questions![0]!
+    return { ticketId, question }
+  }
+  it('keeps the first panel answer when a channel answer arrives afterwards', () => {
+    const events: { type: string; data: Record<string, unknown> }[] = []
+    const h = harness({}, { emit: event => events.push(event) })
+    const { ticketId, question } = asked(h)
+    h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' })
+    h.engine.personAnswered(ticketId, question.id, 'b')
+    const stored = h.repo.tickets.get(ticketId)!.questions![0]!
+    expect(stored.answer).toBe('a')
+    expect(stored.resolution).toBeUndefined()
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer')).toHaveLength(0)
+    expect(events.some(event => event.type === 'question.answer-ignored')).toBe(true)
+    expect(events.some(event => event.type === 'question.answer-pending')).toBe(true)
+  })
+  it('rejects a panel answer once the channel already committed one', () => {
+    const h = harness()
+    const { ticketId, question } = asked(h)
+    h.engine.personAnswered(ticketId, question.id, 'b')
+    expect(h.repo.tickets.get(ticketId)!.questions![0]).toMatchObject({ answer: 'b', resolution: 'answered' })
+    expect(() => h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' }))
+      .toThrow(new UserError('alreadyAnswered'))
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer')).toHaveLength(1)
+  })
+  it('validates panel entries against the options and refuses non-person questions', () => {
+    const h = harness()
+    const { ticketId, question } = asked(h)
+    expect(() => h.engine.answerPersonQuestion(ticketId, question.id, 'c', { entry: 'panel' }))
+      .toThrow(new UserError('invalidOption'))
+    expect(() => h.engine.answerPersonQuestion(ticketId, question.id, '  ', { entry: 'panel' }))
+      .toThrow(new UserError('emptyAnswer'))
+    const free = h.engine.report(ticketId, { state: 'blocked', summary: 'need', question: 'Name?', questionFor: 'person' })
+    expect(() => h.engine.answerPersonQuestion(ticketId, free.questions!.find(item => item.question === 'Name?')!.id, 'x',
+      { entry: 'panel' })).toThrow(new UserError('optionRequired'))
+    const orchestrator = h.engine.report(ticketId, { state: 'blocked', summary: 'need', question: 'Which layout?',
+      questionFor: 'orchestrator' }).questions!.find(item => item.question === 'Which layout?')!
+    expect(() => h.engine.answerPersonQuestion(ticketId, orchestrator.id, 'a', { entry: 'panel' }))
+      .toThrow(new UserError('notPersonQuestion'))
+  })
+  it('marks a pending answer withdrawn when the ticket ends, without delivering it', () => {
+    const h = harness()
+    const { ticketId, question } = asked(h)
+    h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' })
+    h.engine.stopTicket(ticketId)
+    const ended = h.repo.tickets.get(ticketId)!
+    expect(ended.questions![0]).toMatchObject({ withdrawnAnswer: 'a', resolution: 'withdrawn' })
+    expect(ended.questions![0]!.answer).toBeUndefined()
+    expect(ended.inputs.filter(input => input.kind === 'answer')).toHaveLength(0)
+    expect(h.engine.commitAnswer(ticketId, question.id)).toEqual({ questionId: question.id, committed: false })
+    expect(() => h.engine.answerPersonQuestion(ticketId, question.id, 'b', { entry: 'panel' }))
+      .toThrow(new UserError('ticketEnded'))
+  })
+})
+
+describe('correcting a delivered answer', () => {
+  function delivered(h: ReturnType<typeof harness>) {
+    const ticketId = accepted(h).ticketId!
+    const question = h.engine.report(ticketId, { state: 'blocked', summary: 'need a decision', question: 'Which?',
+      questionFor: 'person', options: ['a', 'b'] }).questions![0]!
+    h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' })
+    h.tick(16)
+    h.engine.commitAnswer(ticketId, question.id)
+    return { ticketId, question }
+  }
+  it('replaces a delivered answer, keeps the old one in corrections, and appends one correction Input', () => {
+    const h = harness()
+    const { ticketId, question } = delivered(h)
+    h.tick(5)
+    expect(h.engine.correctAnswer(ticketId, question.id, 'b', 'panel')).toEqual({ questionId: question.id, corrected: true })
+    const corrected = h.repo.tickets.get(ticketId)!.questions![0]!
+    expect(corrected).toMatchObject({ answer: 'b', answeredBy: 'person' })
+    expect(corrected.correctedAt).toBeDefined()
+    expect(corrected.corrections).toEqual([expect.objectContaining({ text: 'a', answeredBy: 'person' })])
+    const corrections = h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer' && input.correction)
+    expect(corrections).toHaveLength(1)
+    expect(corrections[0]).toMatchObject({ id: `question-correction:${question.id}:1`, text: 'b', correction: true })
+    expect(h.engine.correctAnswer(ticketId, question.id, 'b', 'panel')).toEqual({ questionId: question.id, corrected: false })
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer' && input.correction)).toHaveLength(1)
+    expect(h.engine.correctAnswer(ticketId, question.id, 'a', 'panel')).toEqual({ questionId: question.id, corrected: true })
+    expect(h.repo.tickets.get(ticketId)!.questions![0]!.corrections).toEqual([
+      expect.objectContaining({ text: 'a' }), expect.objectContaining({ text: 'b' })])
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer' && input.correction))
+      .toHaveLength(2)
+    expect(h.repo.tickets.get(ticketId)!.inputs.find(input => input.id === `question-correction:${question.id}:2`))
+      .toMatchObject({ text: 'a', correction: true })
+  })
+  it('refuses a correction while the answer is still withdrawable, before any answer, and on ended tickets', () => {
+    const h = harness()
+    const ticketId = accepted(h).ticketId!
+    const question = h.engine.report(ticketId, { state: 'blocked', summary: 'need a decision', question: 'Which?',
+      questionFor: 'person', options: ['a', 'b'] }).questions![0]!
+    expect(() => h.engine.correctAnswer(ticketId, question.id, 'b', 'panel')).toThrow(new UserError('notAnswered'))
+    h.engine.answerPersonQuestion(ticketId, question.id, 'a', { entry: 'panel' })
+    expect(() => h.engine.correctAnswer(ticketId, question.id, 'b', 'panel')).toThrow(new UserError('withdrawInstead'))
+    h.tick(16)
+    h.engine.commitAnswer(ticketId, question.id)
+    h.engine.stopTicket(ticketId)
+    expect(() => h.engine.correctAnswer(ticketId, question.id, 'b', 'panel')).toThrow(new UserError('ticketEnded'))
+  })
+  it('routes orchestrator_reply corrections through the same slot', () => {
+    const h = harness()
+    const { ticketId, question } = delivered(h)
+    const reply = h.engine.reply({ purpose: 'answer', questionId: question.id, correction: true, text: 'b' })
+    expect(reply.id).toBe(`question-correction-reply:${question.id}:1`)
+    expect(h.repo.tickets.get(ticketId)!.questions![0]).toMatchObject({ answer: 'b' })
+    expect(h.outbox.filter(message => message.id === reply.id)).toHaveLength(1)
+    expect(h.repo.tickets.get(ticketId)!.inputs.filter(input => input.kind === 'answer' && input.correction)).toHaveLength(1)
+  })
+})

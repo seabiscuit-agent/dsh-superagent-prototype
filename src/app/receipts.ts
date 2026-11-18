@@ -70,11 +70,12 @@ export function renderResult(ticket: Ticket, report: Pick<WorkerReport, 'state' 
 }
 
 /** The deterministic id of each receipt purpose; a repeated call with the same payload reuses the first receipt. */
-export function receiptId(purpose: 'result' | 'attention' | 'answer', payload: { ticketId?: string; reportAt?: string
+export function receiptId(purpose: 'result' | 'attention' | 'answer' | 'correction', payload: { ticketId?: string; reportAt?: string
   questionId?: string; triggerId?: string; text?: string }): string {
   if (purpose === 'result') return `result:${payload.ticketId ?? ''}:${payload.reportAt ?? ''}`
   if (purpose === 'attention') return `attention-reply:${payload.questionId ?? ''}`
-  return `reply:${payload.triggerId ?? ''}:${createHash('sha1').update(payload.text ?? '').digest('hex')}`
+  const hash = createHash('sha1').update(payload.text ?? '').digest('hex')
+  return purpose === 'correction' ? `correction:${payload.questionId ?? ''}:${hash}` : `reply:${payload.triggerId ?? ''}:${hash}`
 }
 
 /** Checks the free text of an answer: non-empty, not a hidden closer, no internal payload, within the IM limit, and about a person's question. */
@@ -84,6 +85,13 @@ export function validateAnswer(text: string, trigger: Trigger | undefined): Reje
   if (typeof trigger === 'undefined' || !trigger.human) return 'missingQuestion'
   if (wordCount(text) > IM_WORDS) return 'tooLong'
   return undefined
+}
+
+/** Checks the free text of a correction: the same body checks as an answer, without requiring the original human trigger. */
+export function validateCorrection(text: string): Rejection | undefined {
+  const body = rejectedBody(text)
+  if (body) return body
+  return wordCount(text) > IM_WORDS ? 'tooLong' : undefined
 }
 
 /** Whether a question is still open and addressed to a person. */

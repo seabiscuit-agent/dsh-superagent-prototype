@@ -6,10 +6,11 @@ import { checkedImText } from '../infra/text.ts'
 import { SOURCE } from '../sources/local.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
 import { FAILURES_BEFORE_ERROR, Later, type Effects } from './effects.ts'
+import { pendingAnswer } from '../core/model.ts'
 import type { DropReason, Store } from './store.ts'
 
 export interface OutboxHost {
-  readonly store: Pick<Store, 'atomic' | 'receipts' | 'facts'>
+  readonly store: Pick<Store, 'atomic' | 'receipts' | 'facts' | 'tickets'>
   readonly effects: Pick<Effects, 'enqueue' | 'cancel' | 'handle' | 'idle'>
   readonly sources: Pick<SourceRegistry, 'instance' | 'channelAllowed' | 'send'>
   readonly commands: Commands
@@ -71,6 +72,11 @@ export class Outbox implements OutboxPort {
     const { store, sources, commands } = this.host
     const receipt = store.receipts.get(id)
     if (receipt?.status !== 'pending') return
+    // An answer that reaches the slot after the panel or another answer took it is not sent, even if it was queued earlier.
+    if (receipt.kind === 'reply' && receipt.questionId && receipt.ticketId) {
+      const question = store.tickets.get(receipt.ticketId)?.questions?.find(item => item.id === receipt.questionId)
+      if (question && (question.resolution !== undefined || pendingAnswer(question))) { this.settle(receipt, 'answeredElsewhere'); return }
+    }
     if (!sources.instance(receipt.channel.source)?.enabled) throw new Later('The Source is off or not installed')
     // Hold later messages for the same ticket and conversation behind an earlier pending message until it exceeds the failure threshold.
     if (store.receipts.behind(id, FAILURES_BEFORE_ERROR)) throw new Later('An earlier message of this ticket to this conversation waits')

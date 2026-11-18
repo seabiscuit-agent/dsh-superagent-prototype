@@ -1,6 +1,6 @@
 /** Ticket list, ticket detail, mandate basis formatting, and executor load views. */
-import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell, type MandateBasis, type Ticket,
-  type TicketStage } from '../../core/index.ts'
+import { canWithdraw, liveTicket, pendingAnswer, threadKey, ticketStage, type AcceptMode, type AdmissionCell, type MandateBasis,
+  type Question, type Ticket, type TicketStage } from '../../core/index.ts'
 import { assignmentSessionId } from '../../core/worker-session.ts'
 import type { Store } from '../store.ts'
 import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
@@ -58,6 +58,19 @@ export function executorLoad(store: Store, running: number): ExecutorLoad {
   const queued = (ticket: Ticket) => { const stage = ticketStage(ticket); return stage.stage === 'working' && stage.action === 'queued' }
   return { running, queued: store.tickets.open().filter(queued).length }
 }
+/**
+ * One question as the ticket page shows it, whatever its state: the text as Markdown, the flags the page may act on, and the
+ * answer audit (pending deadline, committed time, withdrawal, corrections). Actions are offered only where the slot allows.
+ */
+export function questionDetail(host: ViewHost, ticket: Ticket, question: Question) {
+  const live = liveTicket(ticket)
+  return { ...question, question: markdown(question.question), options: question.options ?? [],
+    canAnswer: live && question.to === 'person' && question.resolution === undefined && !pendingAnswer(question),
+    canWithdraw: live && question.to === 'person' && canWithdraw(question, Date.now()),
+    canCorrect: live && question.to === 'person' && question.resolution === 'answered',
+    ...question.context ? { context: markdown(question.context) } : {} }
+}
+export type QuestionDetailView = ReturnType<typeof questionDetail>
 export function ticketDetail(host: ViewHost, id: string) {
   const { store } = host
   const ticket = store.tickets.get(id)
@@ -76,7 +89,8 @@ export function ticketDetail(host: ViewHost, id: string) {
   }
   // Pass `human = false` for bot-originated mandates so the Source kind still labels the actor as a bot if removed from the policy list.
   const human = ticket.mandate.basis.via !== 'bot'
-  return { ...ticketLine(view, ticket), mandate: { ...ticket.mandate, actor: view.actor(ticket.mandate.actor, human) },
+  return { ...ticketLine(view, ticket), questions: (ticket.questions ?? []).map(question => questionDetail(host, ticket, question)),
+    mandate: { ...ticket.mandate, actor: view.actor(ticket.mandate.actor, human) },
     basis: basisFacts(ticket.mandate.basis, view.rule), paused: store.settings().paused,
     channels: ticket.channels.map(channel => channelLink(view, channel)),
     decision: decision ? decisionView(view, decision) : undefined,

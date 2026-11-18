@@ -112,6 +112,10 @@ export interface PanelServer {
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
 }
+/** One question as `GET tickets/:id` shows it, with only the action the default open slot allows. */
+export const questionRow = (fields: Partial<TicketPageView['questions'][number]> = {}): TicketPageView['questions'][number] => ({
+  id: 'q1', from: 'worker', to: 'person', blocking: true, question: '需要确认按钮颜色', createdAt: '2026-09-23T00:00:00Z',
+  options: ['品牌蓝', '深灰'], canAnswer: true, canWithdraw: false, canCorrect: false, ...fields })
 export let server: PanelServer
 
 function resolved() {
@@ -207,8 +211,8 @@ const overviewView = (): ApiResponse<'GET overview'> => {
 export const acceptDecision = (): NonNullable<TicketPageView['decision']> => ({ id: 'd1', kind: 'accept', outcome: 'accept',
   reason: [{ code: 'explicitRouted' }], at: '2026-09-22T00:00:00Z', strength: 'explicit', ticketId: undefined,
   triggerIds: ['e1'], thread: 'feishu:oc_1:om_root', rules: [], preview: '@bot 修一下', ticketTitle: undefined })
-const ticketDetail = (): TicketPageView => ({
-  ...ticketSummary(), paused: false, decision: acceptDecision(), threads: [threadSummary()],
+export const ticketDetail = (): TicketPageView => ({
+  ...ticketSummary(), questions: [], paused: false, decision: acceptDecision(), threads: [threadSummary()],
   mandate: { strength: 'explicit', policyVersion: 'abcdef1234567890', basis: { via: 'addressed', sender: 'Alice', addressed: 'mention' },
     actor: actor('feishu', MEMBER), scope: '修复登录页回归' },
   basis: { facts: [{ name: 'sender', value: 'Alice' }, { name: 'addressed', value: 'mention' }], legacy: false },
@@ -350,6 +354,33 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
     if (!ticketOf(params.id)) return refuse(404, 'Ticket not found')
     server.tickets.open = []; server.person = server.person.filter(ticket => ticket.id !== params.id)
     return { stopped: true }
+  } },
+  'POST tickets/:id/questions/:questionId/answer': { body: true, answer: ({ params, body }) => {
+    const question = server.ticketDetails[params.id]?.questions?.find(item => item.id === params.questionId)
+    if (!question) return refuse(404, 'Question not found')
+    if (!question.canAnswer) return refuse(409, 'An answer is already pending or committed', { code: 'answerPending', values: {} })
+    question.answer = body.answer; question.answeredBy = 'person'; question.answeredAt = new Date().toISOString()
+    question.withdrawableUntil = new Date(Date.now() + 15_000).toISOString(); question.canAnswer = false
+    question.canWithdraw = true; question.canCorrect = false
+    return { questionId: question.id, pending: true, withdrawableUntil: question.withdrawableUntil, question }
+  } },
+  'POST tickets/:id/questions/:questionId/withdraw': { answer: ({ params }) => {
+    const question = server.ticketDetails[params.id]?.questions?.find(item => item.id === params.questionId)
+    if (!question) return refuse(404, 'Question not found')
+    if (!question.canWithdraw) return refuse(409, 'The withdraw window has passed', { code: 'withdrawExpired', values: {} })
+    question.withdrawnAnswer = question.answer; question.withdrawnAt = new Date().toISOString()
+    question.answer = undefined; question.answeredBy = undefined; question.answeredAt = undefined; question.withdrawableUntil = undefined
+    question.canAnswer = true; question.canWithdraw = false
+    return { questionId: question.id, withdrawn: true as const, question }
+  } },
+  'POST tickets/:id/questions/:questionId/correct': { body: true, answer: ({ params, body }) => {
+    const question = server.ticketDetails[params.id]?.questions?.find(item => item.id === params.questionId)
+    if (!question) return refuse(404, 'Question not found')
+    if (!question.canCorrect) return refuse(409, 'Only a committed answer can be corrected', { code: 'notAnswered', values: {} })
+    question.corrections = [...question.corrections ?? [], { text: question.answer ?? '', at: question.answeredAt ?? '',
+      answeredBy: 'person' }]
+    question.answer = body.answer; question.answeredAt = new Date().toISOString(); question.correctedAt = new Date().toISOString()
+    return { questionId: question.id, corrected: true, question }
   } },
   'POST executor/pause': { body: true, answer: ({ body }) => {
     server.settings = { ...server.settings, paused: body.paused }
