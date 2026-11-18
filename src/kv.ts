@@ -59,4 +59,9 @@ export const KV = {
   feishu: { chats: record<Record<string, boolean>>('feishu-chats'), history: family<string, [chat: string]>('feishu-history:'),
     topics: family<Record<string, string>, [chat: string]>('feishu-history-threads:'),
     seen: family<string[], [thread: string]>('thread-seen:'), initialized: family<boolean, [thread: string]>('thread-initialized:') },
+  /**
+   * Schedule Source: per task row, the last due instant it handled and the Trigger that instant produced. A row with no record has
+   * never fired, so it starts at the most recent due instant rather than replaying its history.
+   */
+  schedule: { cursor: family<{ due: string; triggerId: string }, [job: string]>('schedule-cursor:') },
 }
