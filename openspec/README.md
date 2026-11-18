@@ -31,12 +31,15 @@ openspec/
   Apply 触发即派工、不引入 @ 与按钮、飞书降为可选通道。
 - 已归档能力：`ticket-timeline`（`specs/ticket-timeline/spec.md`）—— 工单事实链：面板折叠时间线、
   `why` 命令、`ticket/<id>/timeline` 读取资源，旧工单按需回填并标 `derived`；schema 12 只建 `fact` 表。
+- 已归档能力：`schedule-source`（`specs/schedule-source/spec.md`）—— 内置定时事件源：5 段 cron + IANA
+  时区在 `schedule:<key>` 线程上产生无发送者 Trigger，走既有准入与评估，只补最近一次错过；与工单内
+  `agenda` 互补不替代。
 - 已实施完成、尚未归档的变更：`ticket-agenda`（agenda 定时唤醒）、`host-owned-mechanics`
   （结果/答复回执由宿主合成、派工前缀）、`resume-master-turn-after-restart`（重启后续跑被切断的主会话回合）。
 - 仍在进行的变更：`on-demand-routing`（主会话按需建单与撤订路由）、`orchestrator-consult`
   （worker 先问 orchestrator、超授权再升级为人）。
-- 待实施的提案：`schedule-source`（内置定时事件源：5 段 cron + IANA 时区在 `schedule:<key>` 线程上
-  产生无发送者 Trigger，走既有准入与评估，只补最近一次错过；与工单内 `agenda` 互补不替代）。
+- 待评审的提案：`dispatch-rules`（确定性事件按 `source + event` 命中 `policy.dispatch.rules` 时跳过模型
+  评估直接建单；只做本仓库单执行器适用的那一半，不做按厂商/profile 分派）。
 
 ## 流程：探索 → 提案 → 实施 → 归档
 
