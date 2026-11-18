@@ -162,6 +162,13 @@ export function inputMessage(input: TicketInput, trigger?: object): string | und
   if (input.kind === 'resumed') return RESUMED
   if (input.kind === 'note') return `Note from the orchestrator, for context only: ${input.text}`
   if (input.kind === 'agenda') return `Scheduled wake from the orchestrator: ${input.text}`
+  if (input.kind === 'answer') {
+    const from = input.answeredBy === 'person' ? 'the person' : 'the orchestrator'
+    const basis = input.basis ? ` Basis: ${input.basis}` : ''
+    return input.correction
+      ? `Corrected answer from ${from} to question ${input.questionId}, which supersedes the earlier answer: ${input.text}${basis}`
+      : `Answer from ${from} to question ${input.questionId}: ${input.text}${basis}`
+  }
   return input.kind === 'text' ? input.text : undefined
 }
 /**
@@ -311,12 +318,13 @@ export class DshExecutor implements Executor {
           woken = true
         }
         const input = ticket.inputs.find(item => item.id === inputId)
+        let delivered = false
         try {
           // Recreate the worker session if it was externally deleted.
           if (!this.host.context.agents.get(sessionId as SessionId)) {
             await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
           }
-          if (input) await this.deliverInput(ticket, assignment, input)
+          if (input) delivered = await this.deliverInput(ticket, assignment, input)
         } catch (error) {
           if (this.host.closing() || error instanceof Later) throw error
           const current = this.host.store.tickets.get(ticketId)
@@ -324,11 +332,16 @@ export class DshExecutor implements Executor {
           this.host.engine.deliveryFailed(ticketId, assignment.id, String(error))
           throw error
         }
+        // An Input the Executor cannot render stays undelivered and diagnosable rather than counting as read.
+        if (!delivered) {
+          this.host.engine.deliveryFailed(ticketId, assignment.id, `The Executor has no message for input ${inputId}`)
+          return
+        }
         this.host.engine.inputsDelivered(ticketId, assignment.id, [inputId])
       }
     } finally { if (woken) this.slots.free(ticketId) }
   }
-  private async deliverInput(ticket: Ticket, assignment: Assignment, input: TicketInput): Promise<void> {
+  private async deliverInput(ticket: Ticket, assignment: Assignment, input: TicketInput): Promise<boolean> {
     // Re-check right before session delivery because the ticket may have ended while awaiting `sourceLink`.
     const live = () => {
       const current = this.host.store.tickets.get(ticket.id)
@@ -339,9 +352,10 @@ export class DshExecutor implements Executor {
     live()
     const trigger = input.kind === 'trigger' ? await this.triggerCard(ticket, input.triggerId, input.note) : undefined
     const message = inputMessage(input, trigger)
-    if (message === undefined) return
+    if (message === undefined) return false
     const text = message.length > ASSIGNMENT_CHARS ? JSON.stringify(capped(message, ASSIGNMENT_CHARS, inputResource(ticket.id, input.id))) : message
     await this.host.sessions.prompt(assignmentSessionId(ticket.id, assignment), input.id, text, 'steer', live)
+    return true
   }
   /** Formats a trigger on `ticket` for the worker, including a preview of the replied-to message when the worker has not yet seen it. */
   private async triggerCard(ticket: Ticket, triggerId: string, note?: string): Promise<object | undefined> {

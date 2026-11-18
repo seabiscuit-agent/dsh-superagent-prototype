@@ -6,6 +6,7 @@ import { SettingsConflict } from '../src/app/settings.ts'
 import type { HttpHost } from '../src/app/http.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { SetupError } from '../src/setup.ts'
+import { UserError } from '../src/core/errors.ts'
 
 type Handler = (req: unknown, res: unknown) => Promise<void>
 type Headers = Record<string, string | undefined>
@@ -95,4 +96,18 @@ it('answers a prompt save that lost a race with 409, and a settings body over 12
   expect(await call('PUT', 'settings/executor', { value, revision: 0 })).toEqual({ status: 400,
     body: { error: `Request exceeds ${128 * 1024} bytes` } })
   expect(saves).toEqual([])
+})
+
+it('answers a question action with its conflict status, and rejects a body the route does not take', async () => {
+  const call = serve({ store: { tickets: { get: () => ({}) } }, engine: {
+    answerPersonQuestion: () => { throw new UserError('answerPending') },
+    withdrawAnswer: () => { throw new UserError('withdrawExpired') },
+    correctAnswer: () => { throw new UserError('emptyAnswer') },
+  } })
+  expect(await call('POST', 'tickets/t1/questions/q1/answer', { answer: 'a' })).toEqual({ status: 409,
+    body: { error: expect.any(String), code: 'answerPending', values: {} } })
+  expect(await call('POST', 'tickets/t1/questions/q1/withdraw')).toMatchObject({ status: 409, body: { code: 'withdrawExpired' } })
+  // An empty answer is a refused request, not a conflict; a body the route does not accept is a validation failure.
+  expect(await call('POST', 'tickets/t1/questions/q1/correct', { answer: ' ' })).toMatchObject({ status: 400, body: { code: 'emptyAnswer' } })
+  expect(await call('POST', 'tickets/t1/questions/q1/answer', {})).toMatchObject({ status: 400, body: { issues: [{ path: 'answer' }] } })
 })

@@ -53,9 +53,11 @@ let restricts: Map<string, unknown[]>
 let hostCompression: boolean
 type HttpHandler = (req: unknown, res: unknown) => Promise<void>
 let http: HttpHandler
-async function api(method: string, path: string): Promise<{ status: number; body: unknown }> {
+async function api(method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
   let status = 0, text = ''
-  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' } }
+  const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
+  const req = { method, url: `/orchestrator/api/${path}`, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' },
+    async *[Symbol.asyncIterator]() { yield* chunks } }
   await http(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { text = data } })
   return { status, body: JSON.parse(text) }
 }
@@ -1962,3 +1964,69 @@ it('drops a wake whose ticket ended and tells the main Session once', async () =
     .some(call => JSON.stringify(call).includes('agenda_dropped'))).toBe(true), { timeout: 5_000 })
   expect(runtime.store.tickets.get(ticket.id)!.inputs.some(input => input.kind === 'agenda')).toBe(false)
 }, 15_000)
+
+it('answers, withdraws and corrects a person question through the panel API', async () => {
+  const { ticket } = await acceptedTicket()
+  const openOptions = () => {
+    const current = runtime.store.tickets.get(ticket.id)!
+    runtime.store.tickets.save({ ...current, questions: [{ id: 'q1', from: 'worker', to: 'person', blocking: true,
+      question: '按钮用哪种蓝？', options: ['品牌蓝', '深灰'], recommend: '品牌蓝', createdAt: new Date().toISOString() }] })
+  }
+  openOptions()
+  expect(await api('POST', `tickets/${ticket.id}/questions/q1/answer`, { answer: '紫色' }))
+    .toMatchObject({ status: 400, body: { code: 'invalidOption' } })
+  const answered = await api('POST', `tickets/${ticket.id}/questions/q1/answer`, { answer: '品牌蓝' })
+  expect(answered).toMatchObject({ status: 200, body: { questionId: 'q1', pending: true,
+    question: { answer: '品牌蓝', canAnswer: false, canWithdraw: true } } })
+  // A pending answer stays off the worker's Inputs until the window closes.
+  expect(runtime.store.tickets.get(ticket.id)!.inputs).toEqual([])
+  expect(await api('POST', `tickets/${ticket.id}/questions/q1/answer`, { answer: '深灰' }))
+    .toMatchObject({ status: 409, body: { code: 'answerPending' } })
+  // A channel answer loses the race: the panel's slot keeps its answer and the losing entry is recorded.
+  runtime.engine.personAnswered(ticket.id, 'q1', '深灰')
+  expect(runtime.store.tickets.get(ticket.id)!.questions![0]!.answer).toBe('品牌蓝')
+  const withdrawn = await api('POST', `tickets/${ticket.id}/questions/q1/withdraw`)
+  expect(withdrawn).toMatchObject({ status: 200, body: { withdrawn: true,
+    question: { withdrawnAnswer: '品牌蓝', canAnswer: true } } })
+  expect(runtime.store.tickets.get(ticket.id)!.questions![0]!.answer).toBeUndefined()
+  expect(await api('POST', `tickets/${ticket.id}/questions/q1/answer`, { answer: '深灰' })).toMatchObject({ status: 200 })
+  runtime.engine.commitAnswer(ticket.id, 'q1')
+  const committed = runtime.store.tickets.get(ticket.id)!
+  expect(committed.questions![0]).toMatchObject({ answer: '深灰', resolution: 'answered', committedAt: expect.any(String) })
+  expect(committed.inputs).toEqual([expect.objectContaining({ kind: 'answer', questionId: 'q1', text: '深灰' })])
+  const corrected = await api('POST', `tickets/${ticket.id}/questions/q1/correct`, { answer: '品牌蓝' })
+  expect(corrected).toMatchObject({ status: 200, body: { corrected: true,
+    question: { answer: '品牌蓝', corrections: [{ text: '深灰' }] } } })
+  expect(runtime.store.tickets.get(ticket.id)!.inputs.filter(input => input.kind === 'answer')).toHaveLength(2)
+})
+
+it('commits a pending panel answer when its window ends, even across a restart', async () => {
+  const { ticket } = await acceptedTicket()
+  const current = runtime.store.tickets.get(ticket.id)!
+  runtime.store.tickets.save({ ...current, questions: [{ id: 'q1', from: 'worker', to: 'person', blocking: true,
+    question: '按钮用哪种蓝？', options: ['品牌蓝', '深灰'], createdAt: new Date().toISOString() }] })
+  runtime.engine.answerPersonQuestion(ticket.id, 'q1', '品牌蓝', { entry: 'panel', holdMs: 40 })
+  expect(runtime.effects.pending('answer', 'q1')).toBe(true)
+  expect(runtime.store.tickets.get(ticket.id)!.questions![0]!.committedAt).toBeUndefined()
+  expect(runtime.store.tickets.get(ticket.id)!.inputs).toEqual([])
+  await restart()
+  await vi.waitFor(() => expect(runtime.store.tickets.get(ticket.id)!.questions![0]!.committedAt).toBeDefined(), { timeout: 3000 })
+  const committed = runtime.store.tickets.get(ticket.id)!
+  expect(committed.questions![0]).toMatchObject({ resolution: 'answered', answer: '品牌蓝' })
+  expect(committed.inputs.filter(input => input.kind === 'answer')).toEqual([expect.objectContaining({ kind: 'answer', questionId: 'q1',
+    text: '品牌蓝' })])
+  expect(runtime.effects.pending('answer', 'q1')).toBe(false)
+})
+
+it('cancels the answer commit effect when the person withdraws in time', async () => {
+  const { ticket } = await acceptedTicket()
+  const current = runtime.store.tickets.get(ticket.id)!
+  runtime.store.tickets.save({ ...current, questions: [{ id: 'q1', from: 'worker', to: 'person', blocking: true,
+    question: '按钮用哪种蓝？', options: ['品牌蓝', '深灰'], createdAt: new Date().toISOString() }] })
+  runtime.engine.answerPersonQuestion(ticket.id, 'q1', '品牌蓝', { entry: 'panel', holdMs: 60_000 })
+  expect(runtime.effects.pending('answer', 'q1')).toBe(true)
+  runtime.engine.withdrawAnswer(ticket.id, 'q1')
+  expect(runtime.effects.pending('answer', 'q1')).toBe(false)
+  expect(runtime.store.tickets.get(ticket.id)!.questions![0]!.answer).toBeUndefined()
+  expect(runtime.store.tickets.get(ticket.id)!.inputs).toEqual([])
+})

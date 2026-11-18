@@ -9,6 +9,7 @@ import { feishuKind } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
 import { snapshot, threadSummary, ticketSummary, triggerView } from '../src/app/views/records.ts'
 import { basisFacts, ticketDetail } from '../src/app/views/tickets.ts'
+import type { Question } from '../src/core/model.ts'
 import { threadDetail } from '../src/app/views/threads.ts'
 import { droppedReplies, sourcesStatus } from '../src/app/views/sources.ts'
 import { overview } from '../src/app/views/overview.ts'
@@ -318,4 +319,34 @@ it('reads each ticket a page\'s follow-ups reached once, and nothing for a messa
   const records = { tickets: { get: vi.fn() }, threads: { get: vi.fn() }, triggers: store.triggers }
   expect(followupOwners(store.triggers.get('f3')!, records)).toEqual([])
   expect([records.tickets.get, records.threads.get].map(read => read.mock.calls.length)).toEqual([0, 0])
+})
+
+it('shows each question with the actions its answer slot allows, while the Ticket row keeps only open ones', () => {
+  const host = views(); live('t1')
+  const ticket = store.tickets.get('t1')!
+  const later = new Date(Date.now() + 60_000).toISOString(), past = new Date(Date.now() - 60_000).toISOString()
+  const question = (fields: Partial<Question> & { id: string }): Question => ({ from: 'worker', to: 'person', blocking: false,
+    question: 'Which?', createdAt: at, ...fields })
+  store.tickets.save({ ...ticket, questions: [
+    question({ id: 'open', options: ['a', 'b'] }),
+    question({ id: 'pending', options: ['a', 'b'], answer: 'a', answeredBy: 'person', answeredAt: at, withdrawableUntil: later }),
+    question({ id: 'answered', answer: 'b', answeredBy: 'person', answeredAt: at, committedAt: at, resolution: 'answered' }),
+    question({ id: 'withdrawn', withdrawnAnswer: 'a', withdrawnAt: at }),
+    question({ id: 'orchestrator', to: 'orchestrator', question: 'Layout?' }),
+  ] })
+  const page = ticketDetail(host, 't1')!
+  const shown = Object.fromEntries(page.questions.map(item => [item.id, item]))
+  expect(shown.open).toMatchObject({ options: ['a', 'b'], canAnswer: true, canWithdraw: false, canCorrect: false })
+  expect(shown.pending).toMatchObject({ answer: 'a', canAnswer: false, canWithdraw: true, canCorrect: false })
+  expect(shown.answered).toMatchObject({ resolution: 'answered', canAnswer: false, canWithdraw: false, canCorrect: true })
+  expect(shown.withdrawn).toMatchObject({ withdrawnAnswer: 'a', canAnswer: true, canWithdraw: false, canCorrect: false })
+  expect(shown.orchestrator).toMatchObject({ canAnswer: false, canWithdraw: false, canCorrect: false })
+  expect(ticketSummary(store.tickets.get('t1')!).questions.map(item => item.id)).toEqual(['open', 'pending', 'withdrawn', 'orchestrator'])
+  // A window that has passed is no longer withdrawable, and an ended Ticket offers no answer actions at all.
+  store.tickets.save({ ...store.tickets.get('t1')!, questions: [question({ id: 'late', answer: 'a', answeredBy: 'person', answeredAt: at,
+    withdrawableUntil: past })] })
+  expect(ticketDetail(host, 't1')!.questions[0]).toMatchObject({ canAnswer: false, canWithdraw: false })
+  store.tickets.save({ ...store.tickets.get('t1')!, ended: { by: 'human', outcome: 'stopped', at }, questions: [question({ id: 'end',
+    options: ['a'] })] })
+  expect(ticketDetail(host, 't1')!.questions[0]).toMatchObject({ canAnswer: false, canWithdraw: false, canCorrect: false })
 })

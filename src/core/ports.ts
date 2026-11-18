@@ -113,10 +113,16 @@ export interface DomainEvents {
   /** A local command prefix was dispatched: mechanically accepted, fell back to assessment, or kept as discussion. */
   'dispatch.fast_path': { triggerId: string; ticketId?: string; result: 'accepted' | 'fallback' | 'discussion' }
   'question.answered': { ticketId: string; questionId: string; by: 'orchestrator' | 'person' }
+  /** A person's answer is recorded on the Question only, until its withdraw window ends and it commits. */
+  'question.answer-pending': { ticketId: string; questionId: string; withdrawableUntil: string }
+  /** A person's corrected answer replaced an answer the worker already received. */
+  'question.corrected': { ticketId: string; questionId: string; by: 'person' }
+  /** A person's channel answer reached the slot after the panel or another answer already took it; it was not adopted. */
+  'question.answer-ignored': { ticketId: string; questionId: string; reason: 'answered' | 'pending' }
   'question.escalated': { ticketId: string; questionId: string; reason: string }
   'question.resolved': { ticketId: string; questionId: string }
-  /** A Question closed without an answer: withdrawn by the worker that asked it, or by the Ticket ending. */
-  'question.withdrawn': { ticketId: string; questionId: string; by: 'worker' | 'ticket' }
+  /** A Question closed without an answer: withdrawn by the worker that asked it, by the person answering it, or by the Ticket ending. */
+  'question.withdrawn': { ticketId: string; questionId: string; by: 'worker' | 'ticket' | 'person' }
   'policy.changed': { from: string; to: string }
 }
 export type DomainEvent = { [K in keyof DomainEvents]: { type: K; at: string; data: DomainEvents[K] } }[keyof DomainEvents]

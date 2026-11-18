@@ -1,6 +1,6 @@
 /** The domain Engine: the single entry point of the core, and the role interfaces its callers receive. */
 import { UserError } from './errors.ts'
-import { isoTime, liveTicket, waitsForQuestion } from './model.ts'
+import { WITHDRAW_WINDOW_MS, canWithdraw, isoTime, liveTicket, pendingAnswer, waitsForQuestion } from './model.ts'
 import type { ChannelRef, Decision, PolicyEffect, Question, ThreadRef, Ticket, Trigger } from './model.ts'
 import type { Candidate, DomainEvent, DomainEvents, FactData, FactType, Repositories } from './ports.ts'
 import type { EngineOptions } from './part.ts'
@@ -143,11 +143,23 @@ export class Engine {
   /**
    * Queue a message for the Channel its purpose names: an acknowledgement or an answer goes where the person's message was
    * written, attention where the message that raised the question was, else, like a result, to the conversation the ticket
-   * started in. A message queued before is not queued again (see `Replies.reply`).
+   * started in. A message queued before is not queued again (see `Replies.reply`). A correction first records the corrected
+   * answer on the question, then says so in the conversation the question came from.
    * @throws UserError when the ticket or trigger is unknown or the purpose's rule refuses it, such as a result of a ticket that
    * is not ready, completed, merged, or dropped.
    */
-  reply(request: ReplyRequest): Reply { return this.repo.atomic(() => this.replies.reply(request)) }
+  reply(request: ReplyRequest): Reply {
+    if (request.purpose !== 'answer' || !request.correction) return this.repo.atomic(() => this.replies.reply(request))
+    return this.repo.atomic(() => {
+      if (!request.questionId) throw new UserError('notAnswered')
+      const { ticket, question } = this.findQuestion(request.questionId)
+      const result = this.correctAnswer(ticket.id, question.id, request.text, 'channel')
+      if (!result.corrected) return { id: '', status: 'sent', reused: true }
+      const refreshed = this.repo.tickets.get(ticket.id)!
+      return this.replies.sendCorrection(refreshed, refreshed.questions!.find(item => item.id === question.id)!, request.text,
+        request.id)
+    })
+  }
 
   // People, through the panel or the main Session
 
@@ -299,6 +311,126 @@ export class Engine {
     })
   }
   /**
+   * Records a person's answer to a worker's question. A `panel` answer must be one of the question's options, records a
+   * pending answer on the question only, and becomes a worker-visible Input when its `holdMs` withdraw window ends; a
+   * `channel` answer is free text and commits at once. Every entry shares this one slot, first write winning: a question
+   * already answered, or holding a pending answer, is refused.
+   * @returns the pending answer's deadline, or that it committed immediately.
+   * @throws UserError for an unknown ticket or question, an ended ticket, a question not asked to a person, a closed question,
+   * a pending or committed answer, an empty answer, and for a panel answer, a question without options or a value outside them.
+   */
+  answerPersonQuestion(ticketId: string, questionId: string, text: string,
+    options: { entry: 'panel' | 'channel'; holdMs?: number } = { entry: 'panel' }):
+    { questionId: string; pending: boolean; withdrawableUntil?: string } {
+    return this.repo.atomic(() => {
+      const { ticket, question } = this.personQuestion(ticketId, questionId)
+      if (question.resolution === 'answered') throw new UserError('alreadyAnswered')
+      if (question.resolution !== undefined) throw new UserError('notOpen')
+      if (pendingAnswer(question)) throw new UserError('answerPending')
+      const answer = text.trim()
+      if (!answer) throw new UserError('emptyAnswer')
+      if (options.entry === 'panel') {
+        if (!question.options?.length) throw new UserError('optionRequired')
+        if (!question.options.includes(answer)) throw new UserError('invalidOption')
+      }
+      const at = this.now()
+      const holdMs = options.holdMs ?? (options.entry === 'panel' ? WITHDRAW_WINDOW_MS : 0)
+      question.answer = answer
+      question.answeredBy = 'person'
+      question.answeredAt = at
+      if (holdMs > 0) {
+        const until = isoTime(new Date(Date.parse(at) + holdMs).toISOString())
+        question.withdrawableUntil = until
+        ticket.updatedAt = at
+        this.repo.tickets.save(ticket)
+        this.record('question.answer-pending', { ticketId: ticket.id, questionId: question.id, withdrawableUntil: until }, at, ticket.id)
+        return { questionId: question.id, pending: true, withdrawableUntil: until }
+      }
+      this.commitWithin(ticket, question, at)
+      return { questionId: question.id, pending: false }
+    })
+  }
+  /**
+   * Commits a pending answer at its deadline, as the persistent answer effect does: the answer closes the question and
+   * becomes a worker-visible Input. Silent when the question was withdrawn, answered, resolved, or its ticket ended first.
+   * @returns whether this call committed the answer.
+   */
+  commitAnswer(ticketId: string, questionId: string): { questionId: string; committed: boolean } {
+    return this.repo.atomic(() => {
+      const ticket = this.repo.tickets.get(ticketId)
+      const question = ticket?.questions?.find(item => item.id === questionId)
+      if (!ticket || !question || !liveTicket(ticket) || !pendingAnswer(question)) return { questionId, committed: false }
+      this.commitWithin(ticket, question, this.now())
+      return { questionId, committed: true }
+    })
+  }
+  /**
+   * Withdraws a person's pending answer before the worker receives it: only inside the withdraw window, and only before the
+   * answer committed. The question stays open and the withdrawn answer stays on it for the audit.
+   * @throws UserError for an unknown ticket or question, an ended ticket, an answer already committed, an expired window, or
+   * no pending answer to withdraw.
+   */
+  withdrawAnswer(ticketId: string, questionId: string): { questionId: string; withdrawn: true } {
+    return this.repo.atomic(() => {
+      const ticket = this.repo.tickets.get(ticketId)
+      if (!ticket) throw new UserError('unknownTicket')
+      if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+      const question = ticket.questions?.find(item => item.id === questionId)
+      if (!question) throw new UserError('unknownQuestion')
+      if (question.resolution === 'answered' && question.committedAt !== undefined) throw new UserError('alreadyCommitted')
+      if (!pendingAnswer(question)) throw new UserError('notWithdrawable')
+      const at = this.now()
+      if (!canWithdraw(question, at)) throw new UserError('withdrawExpired')
+      question.withdrawnAnswer = question.answer
+      question.withdrawnAt = at
+      delete question.answer
+      delete question.answeredBy
+      delete question.answeredAt
+      delete question.withdrawableUntil
+      ticket.updatedAt = at
+      this.repo.tickets.save(ticket)
+      this.record('question.withdrawn', { ticketId: ticket.id, questionId: question.id, by: 'person' }, at, ticket.id)
+      return { questionId: question.id, withdrawn: true }
+    })
+  }
+  /**
+   * Corrects a person's answer the worker already received: the current answer moves to `corrections`, the new one becomes
+   * current, and an immediate correction Input tells the worker it supersedes the earlier answer. The same text is a no-op.
+   * @throws UserError for an unknown ticket or question, an ended ticket, a question not asked to a person, a question not
+   * answered yet, an answer still withdrawable (`withdrawInstead`), an empty answer, or, for a panel correction, a value
+   * outside the question's options.
+   */
+  correctAnswer(ticketId: string, questionId: string, text: string, entry: 'panel' | 'channel' = 'channel'):
+    { questionId: string; corrected: boolean } {
+    return this.repo.atomic(() => {
+      const { ticket, question } = this.personQuestion(ticketId, questionId)
+      if (question.resolution === undefined) {
+        if (pendingAnswer(question)) throw new UserError('withdrawInstead')
+        throw new UserError('notAnswered')
+      }
+      if (question.resolution !== 'answered') throw new UserError('notAnswered')
+      const answer = text.trim()
+      if (!answer) throw new UserError('emptyAnswer')
+      if (entry === 'panel') {
+        if (!question.options?.length) throw new UserError('optionRequired')
+        if (!question.options.includes(answer)) throw new UserError('invalidOption')
+      }
+      if (question.answer === answer) return { questionId: question.id, corrected: false }
+      const at = this.now()
+      question.corrections = [...question.corrections ?? [],
+        { text: question.answer ?? '', at: question.answeredAt ?? at, answeredBy: 'person' }]
+      question.answer = answer
+      question.answeredBy = 'person'
+      question.answeredAt = at
+      question.correctedAt = at
+      ticket.updatedAt = at
+      this.tickets.addInput(ticket, { id: `question-correction:${question.id}:${question.corrections.length}`, kind: 'answer',
+        questionId: question.id, text: answer, answeredBy: 'person', at, correction: true })
+      this.record('question.corrected', { ticketId: ticket.id, questionId: question.id, by: 'person' }, at, ticket.id)
+      return { questionId: question.id, corrected: true }
+    })
+  }
+  /**
    * Moves a worker's question from the main Session to a person, recording why; a question already for a person is left
    * alone (`already`). Sending the attention is the caller's job, so a channel failure leaves the question for the person.
    * @throws UserError for an unknown or closed question, or an empty reason.
@@ -316,18 +448,22 @@ export class Engine {
     })
   }
   /**
-   * Records that a person's answer to a worker's question went out: closes the question and queues the answer as an Input.
-   * Idempotent, and silent for a question that is already closed or unknown (the outbox may replay a settled message).
+   * Records that a person's channel answer to a worker's question went out. Every entry shares the question's one answer
+   * slot: an answer that already committed, or a pending panel answer, is not adopted; the call is silent for a question that
+   * is closed or unknown, since the outbox may replay a settled message.
    */
   personAnswered(ticketId: string, questionId: string, text: string): void {
     this.repo.atomic(() => {
       const ticket = this.repo.tickets.get(ticketId)
       const question = ticket?.questions?.find(item => item.id === questionId)
-      if (!ticket || !question || question.resolution !== undefined) return
-      const at = this.now()
-      question.answer = text; question.answeredBy = 'person'; question.answeredAt = at; question.resolution = 'answered'
-      this.tickets.addInput(ticket, { id: `question-answer:${question.id}`, kind: 'answer', questionId: question.id, text, answeredBy: 'person', at })
-      this.record('question.answered', { ticketId: ticket.id, questionId: question.id, by: 'person' }, at, ticket.id)
+      if (!ticket || !question || !liveTicket(ticket) || question.to !== 'person') return
+      if (question.resolution !== undefined || pendingAnswer(question)) {
+        this.record('question.answer-ignored',
+          { ticketId, questionId, reason: question.resolution !== undefined ? 'answered' : 'pending' }, this.now(), ticket.id)
+        return
+      }
+      if (!text.trim()) return
+      this.answerPersonQuestion(ticketId, questionId, text, { entry: 'channel', holdMs: 0 })
     })
   }
   /**
@@ -361,6 +497,34 @@ export class Engine {
       return { ticket, question }
     }
     throw new UserError('unknownQuestion')
+  }
+  /** The live ticket's question asked to a person, refusing a missing ticket or question, an ended ticket, or another asker. */
+  private personQuestion(ticketId: string, questionId: string): { ticket: Ticket; question: Question } {
+    const ticket = this.repo.tickets.get(ticketId)
+    if (!ticket) throw new UserError('unknownTicket')
+    if (!liveTicket(ticket)) throw new UserError('ticketEnded')
+    const question = ticket.questions?.find(item => item.id === questionId)
+    if (!question) throw new UserError('unknownQuestion')
+    if (question.to !== 'person') throw new UserError('notPersonQuestion')
+    return { ticket, question }
+  }
+  /** The question `questionId` on any ticket, open or closed, for a correction of its answer. */
+  private findQuestion(questionId: string): { ticket: Ticket; question: Question } {
+    for (const ticket of this.repo.tickets.list()) {
+      const question = ticket.questions?.find(item => item.id === questionId)
+      if (question) return { ticket, question }
+    }
+    throw new UserError('unknownQuestion')
+  }
+  /** Closes a pending answer and queues the answer Input the worker reads, in the write's own transaction. */
+  private commitWithin(ticket: Ticket, question: Question, at: string): void {
+    question.resolution = 'answered'
+    question.committedAt = at
+    delete question.withdrawableUntil
+    ticket.updatedAt = at
+    this.tickets.addInput(ticket, { id: `question-answer:${question.id}`, kind: 'answer', questionId: question.id,
+      text: question.answer ?? '', answeredBy: 'person', at })
+    this.record('question.answered', { ticketId: ticket.id, questionId: question.id, by: 'person' }, at, ticket.id)
   }
   /** The Engine's clock, for the audit timestamps of a question's answer. */
   private now(): string { return this.options.now?.() ?? new Date().toISOString() }
@@ -399,7 +563,8 @@ export type EngineForSources = Pick<Engine, 'receive' | 'bindThread' | 'threadCl
 export type EngineForMainSession = Pick<Engine, 'candidate' | 'candidateDelivered' | 'decide' | 'attach' | 'reply' | 'requestStatus' | 'note'
   | 'agenda' | 'answerQuestion' | 'escalate'>
 /** What people ask of the Engine, through the panel or the main Session. */
-export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'>
+export type EngineForPeople = Pick<Engine, 'stopTicket' | 'retryTicket' | 'reevaluate' | 'unsubscribe' | 'dismiss'
+  | 'answerPersonQuestion' | 'withdrawAnswer' | 'correctAnswer'>
 /** What Settings tells the Engine. */
 export type EngineForSettings = Pick<Engine, 'policyChanged'>
 /** What the Executor tells the Engine, and what its workers ask of it. */

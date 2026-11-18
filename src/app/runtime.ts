@@ -195,6 +195,12 @@ export class Runtime extends Service implements SourceHost {
           const followup = followed ? followupNotice(store, sources, event.data.triggerId) : undefined
           if (followup) sessions.relay(followup.id, followup.text)
           // Notify the ticket's conversations whenever it ends via a pull request.
+          // A pending panel answer commits at its deadline; closing or replacing it leaves only the row to clear.
+          if (event.type === 'question.answer-pending')
+            this.effects.enqueue('answer', event.data.questionId, { ticketId: event.data.ticketId, questionId: event.data.questionId },
+              event.data.withdrawableUntil)
+          if (event.type === 'question.answered' || event.type === 'question.withdrawn' || event.type === 'question.corrected')
+            this.effects.cancel('answer', event.data.questionId)
           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
           if (ended && setup.configured()) {
             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
@@ -203,6 +209,9 @@ export class Runtime extends Service implements SourceHost {
         } })
       // A scheduled wake is one-shot: the row is deleted once its Input is written; a ticket waiting for a person keeps it queued.
       effects.handle('agenda', agendaHandler(engine), { limit: () => this.paused() ? 0 : 4 })
+      // A panel answer is only recorded on the question until this effect commits it, so the worker cannot read it early.
+      effects.handle('answer', async payload => { engine.commitAnswer(payload.ticketId, payload.questionId) },
+        { limit: () => this.paused() ? 0 : 4 })
       // Update the `evals` health entry on every pass if an evaluation failed as unavailable within the last hour.
       const evals = board.claim('evals', { state: 'ready', detail: 'No unavailable Eval in the last hour' })
       const evaluateDue = () => { engine.evaluateDue(); evals.set(evalsHealth(store)) }

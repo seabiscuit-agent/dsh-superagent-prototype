@@ -1,8 +1,8 @@
 /** The Engine's messages to Channels, each by the rule that allows it. */
 import { key } from './ids.ts'
 import { UserError } from './errors.ts'
-import { latestAssignment, liveTicket, openQuestions, ticketOutcome } from './model.ts'
-import type { ChannelRef, Ticket, Trigger } from './model.ts'
+import { latestAssignment, liveTicket, openQuestions, pendingAnswer, ticketOutcome } from './model.ts'
+import type { ChannelRef, Question, Ticket, Trigger } from './model.ts'
 import type { ReplyStatus } from './ports.ts'
 import { EnginePart } from './part.ts'
 
@@ -17,7 +17,9 @@ export type ReplyRequest =
     /** The open person question this attention answers or points at; without it the text must match the question exactly. */
     questionId?: string; text: string
     /** The receipt id a host-composed message must keep; without it the id is derived from the request's payload. */
-    id?: string }
+    id?: string
+    /** The answer corrects one the worker already received, rather than filling an open answer slot. */
+    correction?: true }
 /** A queued message: its id, whether it went out, and whether an earlier request had queued it already. */
 export interface Reply { id: string; status: ReplyStatus; reused: boolean }
 
@@ -46,6 +48,16 @@ export class Replies extends EnginePart {
    */
   acknowledgeAccepted(ticketId: string, trigger: Trigger, text: string): void {
     if (trigger.channel && trigger.human) this.options.outbox.send({ id: key('ack', trigger.id), channel: trigger.channel, text, kind: 'acknowledgement', ticketId })
+  }
+  /** Queue a person's corrected answer where their question came from, once per correction, and report its receipt. */
+  sendCorrection(ticket: Ticket, question: Question, text: string, id?: string): Reply {
+    const trigger = question.triggerId ? this.repo.triggers.get(question.triggerId) : undefined
+    const channel = trigger?.channel ?? this.sourceChannel(ticket)
+    if (!channel) throw new UserError('noChannel')
+    const receipt = id ?? `question-correction-reply:${question.id}:${question.corrections?.length ?? 0}`
+    const existing = this.options.outbox.status(receipt)
+    if (!existing) this.options.outbox.send({ id: receipt, channel, text, kind: 'reply', ticketId: ticket.id })
+    return { id: receipt, status: this.options.outbox.status(receipt) ?? 'pending', reused: existing !== undefined }
   }
   /** Withdraw a ticket's question for a person from the outbox, unless it went out already. */
   withdrawAttention(attentionId: string): void {
@@ -81,6 +93,20 @@ export class Replies extends EnginePart {
       if (!ticket || !ready) throw new UserError('notReady')
     }
     const open = ticket ? openQuestions(ticket) : []
+    // Every answer entry shares one slot: a committed answer, or a panel answer still in its withdraw window, refuses it.
+    if (request.purpose === 'answer' && ticket) {
+      const questions = ticket.questions ?? []
+      const asked = questions.filter(question => question.triggerId !== undefined && question.triggerId === trigger?.id)
+      const target = request.questionId
+        ? questions.find(question => question.id === request.questionId)
+        : asked.find(question => question.resolution === undefined) ?? asked.at(-1)
+          ?? (open.filter(question => question.to === 'person').length === 1 ? open.filter(question => question.to === 'person')[0] : undefined)
+      if (target) {
+        if (target.to !== 'person') throw new UserError('notPersonQuestion')
+        if (target.resolution === 'answered') throw new UserError('alreadyAnswered')
+        if (pendingAnswer(target)) throw new UserError('answerPending')
+      }
+    }
     const attention = request.purpose === 'attention'
       ? request.questionId ? open.find(question => question.id === request.questionId && question.to === 'person')
         : open.find(question => question.to === 'person' && question.question === request.question)

@@ -8,7 +8,7 @@ import { IM_WORDS, NOTE_WORDS, wordCount } from '../../infra/text.ts'
 import { AssessmentSchema, EvalReadSchema, WorktreeNameSchema, type MasterAssessor } from '../assessment.ts'
 import { ticketCard } from '../cards.ts'
 import { agendaKey, type Effects } from '../effects.ts'
-import { openPerson, receiptId, renderResult, validateAnswer, type Rejection } from '../receipts.ts'
+import { openPerson, receiptId, renderResult, validateAnswer, validateCorrection, type Rejection } from '../receipts.ts'
 import { pullOf } from '../../sources/github-pull.ts'
 import { PromptConfigSchema, savePrompts, type Prompts } from '../prompts.ts'
 import { attentionText } from '../render.ts'
@@ -288,14 +288,15 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
     }),
     tool({
       name: 'orchestrator_reply',
-      description: `Send one host-composed receipt for a ticket: a ready result (purpose=result, ticket_id), attention for an open person question (purpose=attention, question_id), or an answer to a person's question (purpose=answer, trigger_id). The host writes the result and attention bodies from the ticket's report and stored question; only an answer keeps your text. Refused bodies send nothing and return status=rejected with a reason. IM limit: ${IM_WORDS} words.`,
+      description: `Send one host-composed receipt for a ticket: a ready result (purpose=result, ticket_id), attention for an open person question (purpose=attention, question_id), or an answer to a person's question (purpose=answer, trigger_id; correction=true with question_id supersedes the delivered answer). The host writes the result and attention bodies from the ticket's report and stored question; only an answer or correction keeps your text. Refused bodies send nothing and return status=rejected with a reason. IM limit: ${IM_WORDS} words.`,
       schema: z.object({
         trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
         ticket_id: z.string().optional().describe('The ticket whose latest report a result carries, or whose question attention asks.'),
         purpose: z.enum(['answer', 'result', 'attention']),
         question_id: z.string().optional().describe('The open person question attention asks.'),
         note: z.string().optional().describe('For a result: at most two short sentences of context, composed into the host body.'),
-        text: z.string().optional().describe('For an answer: the answer to the person, at most 100 words.'),
+        text: z.string().optional().describe('For an answer or correction: the answer to the person, at most 100 words.'),
+        correction: z.boolean().optional().describe('With question_id: supersede the delivered answer.'),
       }).strict(),
       execute: async (args, _signal, turn) => {
         const rejected = (reason: Rejection, receipt: string) => ({ receipt_id: receipt, status: 'rejected' as const, reason })
@@ -308,6 +309,15 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
           // The receipt is the owner-facing message: end the turn here so the model cannot append a duplicate or paraphrase of it.
           if (status === 'sent') turn.concludeTurn()
           return { receipt_id: receipt, status }
+        }
+        if (args.purpose === 'answer' && args.correction) {
+          const questionId = args.question_id
+          const receipt = receiptId('correction', { questionId, text: args.text ?? '' })
+          if (!questionId) return rejected('missingQuestion', receipt)
+          const problem = validateCorrection(args.text ?? '')
+          if (problem) return rejected(problem, receipt)
+          return send(receipt, () => host.engine.reply({ purpose: 'answer', questionId, triggerId: args.trigger_id,
+            correction: true, text: args.text!.trim(), id: receipt }))
         }
         if (args.purpose === 'answer') {
           const trigger = args.trigger_id ? host.store.triggers.get(args.trigger_id) : undefined

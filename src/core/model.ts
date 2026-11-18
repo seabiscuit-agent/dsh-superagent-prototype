@@ -272,7 +272,9 @@ export type TicketInput =
   | { id: string; kind: 'agenda'; text: string; at: string }
   /** An answer to a question the worker asked; it reaches the worker unless the ticket ended. */
   | { id: string; kind: 'answer'; questionId: string; text: string; basis?: string
-    answeredBy: 'orchestrator' | 'person'; at: string }
+    answeredBy: 'orchestrator' | 'person'; at: string
+    /** The corrected answer replaces one the worker already received, and says so. */
+    correction?: true }
 
 /**
  * How a Policy change bears on a ticket: the rules it was accepted under that changed, with their instruction now, or no
@@ -335,6 +337,17 @@ export interface Question {
   resolution?: 'answered' | 'resolved' | 'withdrawn'
   resolvedAt?: string
   createdAt: string
+  /** Until when a person's answer can still be withdrawn, before it reaches the worker. */
+  withdrawableUntil?: string
+  /** When a person's answer reached the worker and closed the question. */
+  committedAt?: string
+  /** When a person withdrew a pending answer, and the answer that was withdrawn. */
+  withdrawnAt?: string
+  withdrawnAnswer?: string
+  /** When a person corrected an answer the worker already received. */
+  correctedAt?: string
+  /** The answers a correction replaced, oldest first; the current answer stays in `answer`. */
+  corrections?: { text: string; at: string; answeredBy: 'person' }[]
 }
 /** Ticket aggregate: an authorized work item with its assignments, channels, thread bindings, and inputs. */
 export interface Ticket {
@@ -408,6 +421,22 @@ export function readUntil(ticket: Pick<Ticket, 'assignments'>, progress = true):
 /** The questions of a ticket that are not closed yet. */
 export function openQuestions(ticket: Pick<Ticket, 'questions'>): Question[] {
   return (ticket.questions ?? []).filter(question => question.resolution === undefined)
+}
+/** How long a person's answer stays withdrawable before the persistent effect commits it to the worker. */
+export const WITHDRAW_WINDOW_MS = 15_000
+/**
+ * Whether a person answered the question but the worker has not received the answer yet: a pending answer can still be
+ * withdrawn, and never became a worker-visible Input.
+ */
+export function pendingAnswer(question: Pick<Question, 'answer' | 'resolution' | 'committedAt'>): boolean {
+  return question.answer !== undefined && question.resolution === undefined && question.committedAt === undefined
+}
+/** Whether a pending answer is still inside its withdraw window at `now`. */
+export function canWithdraw(question: Pick<Question, 'answer' | 'resolution' | 'committedAt' | 'withdrawableUntil'>,
+  now: number | string = Date.now()): boolean {
+  if (!pendingAnswer(question) || question.withdrawableUntil === undefined) return false
+  const at = typeof now === 'number' ? now : Date.parse(now)
+  return at < Date.parse(question.withdrawableUntil)
 }
 /** The oldest open blocking question, to `to` when given. */
 export function blockingQuestion(ticket: Pick<Ticket, 'questions'>, to?: Question['to']): Question | undefined {
