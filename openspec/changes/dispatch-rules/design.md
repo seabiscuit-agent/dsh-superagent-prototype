@@ -72,7 +72,7 @@ Trigger 增加可选 `event`（`<source>.<kind>`）。本变更只声明两个 S
 ### 5. 复用 `Evals.accept` 与 Decision，而不是直接 `Tickets.create`
 
 `Evals.dispatch(triggerId)` 构造一个 gate-only Evaluation（与 `directEval` 同形，
-`src/core/evals.ts:71-160`），然后调用私有 `accept`：Mandate `strength: "inferred"`、`basis.via:
+`src/core/evals.ts:273-320`），然后调用私有 `accept`：Mandate `strength: "inferred"`、`basis.via:
 "dispatch"`、`scope` 为规则 `brief`，Decision 原因码 `dispatchRule`。这样 revalidate、policy 变化、
 时间线与卡片渲染都无需第二套路径。备选是直接 `tickets.create`，但那会绕过 Mandate 与 Decision，
 使派工工单无法被 `policyChanged` 与 `revalidate` 正确处理。

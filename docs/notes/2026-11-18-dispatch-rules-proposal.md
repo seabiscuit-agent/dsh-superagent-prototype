@@ -37,10 +37,10 @@
 ## 坑 / 需注意（写方案时逐条对照源码）
 
 - **必须复用 `Evals.accept` 而非 `tickets.create`**：绕过 Mandate 会让派工工单无法被 `policyEffects` 与
-  `revalidate` 处理（`src/policy.ts:144-166`、`src/core/model.ts:273-278`）。
+  `revalidate` 处理（`src/policy.ts:144-165`、`src/core/model.ts:272-277`）。
 - **容量满必须先移出 `thread.pending`**：intake 已经 queue 了，不移除的话下一 pass 的模型评估会建单，上限失效。
 - **dispatch 放在同事务、intake 之后**：`Engine.receive` 是 `repo.atomic(() => intake.receive(...))`
-  （`src/core/engine.ts:49-51`）；在 `stored` 后调用，避免与去重/scope 过滤抢跑。
+  （`src/core/engine.ts:48-50`）；在 `stored` 后调用，避免与去重/scope 过滤抢跑。
 - **gate 的 `inferred` 判定即安全边界**：`machineGate` 要求 `scope.listened && (addressed || observed)` 且
   bot 在列表 / admission cell 为 `inferred`（`src/policy.ts:171-212`）；派工只在此之后接管，不能只看
   `human === false`。
