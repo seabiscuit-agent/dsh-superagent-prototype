@@ -52,7 +52,7 @@ GitHub CI 触发按检查结果声明 `github.ci.failed`、`github.ci.running` �
 ### Requirement: 派工资格
 
 派工 MUST 只对同时满足以下条件的 Trigger 生效：`human` 为 `false`；gate 判定为 `admissible` 且
-`strength` 为 `inferred`；评估模式为 `auto`；策略未被暂停；trigger 已入评估队列且没有工单认领它。
+`strength` 为 `inferred`；评估模式为 `auto`；策略未被暂停；trigger 没有工单认领它（首次接收时已入评估队列）。
 人类显式请求、`addressed`、followup，以及 `observe`/`off` 模式下的 Trigger MUST NOT 被派工接管。
 
 #### Scenario: 机器事件且自动模式
