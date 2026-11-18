@@ -209,7 +209,7 @@ export class Runtime extends Service implements SourceHost {
       const passes = this.passes = new Passes({ engine: { receive: (trigger, options) => engine.receive(trigger, options), evaluateDue }, effects,
         health: this.runtimeHealth, lifetime: this.lifetime, configured: () => setup.configured(), closing: () => this.closing() })
       this.sourceDeps = { store, engine, outbox, commands, sources, get ready() { return runtime.ready },
-        get deployment() { return setup.deployment }, configured: () => setup.configured(),
+        get deployment() { return setup.deployment }, configured: () => setup.configured(), paused: () => this.paused(),
         get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem }, receive: trigger => passes.receive(trigger) }
       const restartQueue = this.restartQueue = new RestartQueue({
         load: () => executorLoad(store, this.executor.activeCount()),

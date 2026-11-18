@@ -14,6 +14,7 @@ export const HEALTH_TEXT = {
   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
   feishuBotMissing: 'Waiting for the Feishu bot',
   pollFailures: '{count} consecutive failed polls; last: {error}',
+  scheduleJobInvalid: 'Task row {job} does not work: {error}',
 } as const
 export type HealthCode = keyof typeof HEALTH_TEXT
 export type Health = { state: 'starting' | 'ready' | 'paused' | 'error'; detail: string; at?: string; code?: HealthCode; values?: Record<string, string> }
@@ -34,6 +35,12 @@ export interface SourceContext {
   readonly ready: Promise<void>
   /** True once setup resolved the repository and accounts; Sources poll only then. */
   configured(): boolean
+  /**
+   * True while the orchestrator holds evaluation and delivery (a person paused it, or setup is unfinished). Sources that derive their
+   * events from the clock stop producing them then, so each row's due instants fold into the single catch-up it fires on resuming;
+   * Sources of external events keep recording them, because those would otherwise be lost.
+   */
+  paused(): boolean
   /** Setup problem keeping this Source's account from running; only the Feishu bot check reports one. */
   readonly problem?: SetupProblem | undefined
   /** Returns a Source's configuration while enabled, or undefined while disabled or uninstalled. */

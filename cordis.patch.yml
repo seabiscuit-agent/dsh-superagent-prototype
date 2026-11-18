@@ -9,6 +9,10 @@
     # Local Source; registers the main session's GUI so the owner's messages there become candidates.
     - id: dsh-superagent-local
       name: dsh-superagent/local-watch
+    # Optional Schedule Source; requires adding task rows after enabling.
+    - id: dsh-superagent-schedule
+      name: dsh-superagent/schedule-watch
+      disabled: true
     # Optional Feishu Source; requires configuring a bot CLI after enabling.
     - id: dsh-superagent-feishu
       name: dsh-superagent/feishu-watch

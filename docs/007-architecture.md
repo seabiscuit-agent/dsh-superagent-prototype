@@ -386,6 +386,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/github-channel.ts` | The GitHub Channel: comments and review thread replies, `sent` or `gone` |
 | `src/sources/github-read.ts` | CI snapshots, repository reads, the `github/` resources, and `githubThreadContext`: an Issue's or pull request's conversation by page |
 | `src/sources/local.ts` | The local kind and plugin entry, exported as `./local-watch`: the main session's own GUI messages as the owner's explicit Triggers, and the no-op Channel that settles their replies |
+| `src/sources/schedule.ts` | The schedule kind and plugin entry, exported as `./schedule-watch`: the task rows, their Scope and Policy parts, one Trigger per due instant with a cursor per row, and the watch loop that sleeps until the nearest due instant |
+| `src/sources/schedule-cron.ts` | Five-field cron expressions with IANA time zones: `parseCron`, `nextDue` and `previousDue`, which step minute by minute over `Intl.DateTimeFormat` and union a restricted day and weekday |
 | `src/sources/feishu.ts` | The Feishu kind and plugin entry, exported as `./feishu-watch` |
 | `src/sources/feishu-trigger.ts` | Feishu messages as Triggers, by one rule for live events, history pages and topic pages |
 | `src/sources/feishu-loops.ts` | The Feishu loops: the event consumer, history recovery, chat names and polling of subscribed topics |
@@ -416,7 +418,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts`, `src/sources/feishu.ts`, and `src/sources/local.ts` are also the entries of the three Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch`, and `./local-watch`. The bundle's `cordis.patch.yml` inserts the four plugins, with Feishu disabled.
+`src/sources/github.ts`, `src/sources/feishu.ts`, `src/sources/local.ts`, and `src/sources/schedule.ts` are also the entries of the four Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch`, `./feishu-watch`, `./local-watch`, and `./schedule-watch`. The bundle's `cordis.patch.yml` inserts the five plugins, with Feishu and schedule disabled.
 
 ## Tests
 
@@ -428,6 +430,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/registry.spec.ts` | `SourceRegistry`: instances, validation, Policy parts, Channels and Thread context |
 | `tests/sources.spec.ts` | The Feishu and GitHub Sources on a `SourceContext`: translation, polls and read positions, the pull request rules, health |
 | `tests/local.spec.ts` | The local Source: the kind and its plugin entry, the owner preset, main-session messages as explicit candidates, echo filtering, the Apply flow with its no-op Channel, and the dispatch guidance |
+| `tests/schedule-cron.spec.ts` | Cron parsing and the due instants it yields: field syntax it accepts and rejects, a wall clock in a time zone, daylight saving in New York, the union of a restricted day and weekday, and an expression that never comes due |
+| `tests/schedule.spec.ts` | The schedule Source on a `SourceContext` and the real Engine: Triggers per due instant with their shape, the cursor across restarts, downtime and the pause, rows that are off or broken, Scope and Policy parts, admission, and a failure escaping the loop |
 | `tests/dispatch-fast-path.spec.ts` | `!dispatch` / `!discussion` / `!!` parsing, the mechanical accept and its fallback without a configured language |
 | `tests/receipts.spec.ts` | Host-composed result and attention bodies, answer validation, internal-payload filtering and deterministic receipt ids |
 | `tests/commands.spec.ts` | CLI calls as the deployment's accounts, the Channels' answers, and repository-scoped GitHub calls |
