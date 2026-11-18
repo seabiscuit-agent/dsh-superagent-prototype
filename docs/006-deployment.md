@@ -100,11 +100,20 @@ After the first start, edit machine limits in **Settings → Deployment** or the
 ## Start and stop
 
 ```sh
+scripts/dsh-superagent ls
 scripts/dsh-superagent start
 scripts/dsh-superagent status
+scripts/dsh-superagent start superagent-spawner
+scripts/dsh-superagent status superagent-spawner
 ```
 
+`ls` prints every instance the panel registered in `~/.dsh/spawner/instances.json` (or the file `DSH_SUPERAGENT_REGISTRY` names): name, port, state and URL. The state is `running` when that profile's DSH process exists, `stopped` otherwise, and `archived` for an instance the panel archived. Run the script without a subcommand to print the same table with a short usage line.
+
+Pass an instance name to `start`, `stop`, `restart` or `status` to read the profile, port, working directory, `DSH_HOME` and tmux session from its registry row, so a name is enough for an instance on another port. A `--profile` that contradicts the row, or a name that is not registered, is an error: the script never falls back to the default profile.
+
 `start` runs `dsh --profile superagent` in tmux session `dsh-superagent`, or `dsh-<profile>` for another profile. It waits up to one minute for the runtime to become ready or report a setup requirement. On a first run it prints the missing setup information. It refuses duplicate instances, including ones started outside this script.
+
+An archived instance cannot be started: `start` and `restart` exit 1 and say to restore it in the panel first, and `--respect-stop` skips it like an intentional stop. `status` reports `"archived": true` and treats the instance as `manually_stopped`, so the hourly check below leaves it stopped.
 
 `stop` and `restart` request graceful shutdown and wait up to five minutes for Executors. They never force-kill the process or touch other tmux sessions.
 

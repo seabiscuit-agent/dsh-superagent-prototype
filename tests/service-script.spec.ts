@@ -49,10 +49,14 @@ afterEach(() => {
 })
 function run(...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise(resolve => execFile('python3', [join(root, 'scripts', 'dsh-superagent'), ...args],
-    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '' },
+    { env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, DSH_SUPERAGENT_PROFILE: '', DSH_SUPERAGENT_URL: '',
+      DSH_SUPERAGENT_REGISTRY: join(root, 'registry.json') },
       timeout: 20_000 },
     (error, stdout, stderr) => resolve({ code: typeof error?.code === 'number' ? error.code : 0, stdout, stderr })))
 }
+/** Write the panel registry the script reads: the instances it can list, start and refuse. */
+const registered = (...rows: Record<string, unknown>[]) =>
+  writeFileSync(join(root, 'registry.json'), JSON.stringify({ instances: rows }))
 const READY = { health: { runtime: { state: 'ready', detail: '' } }, setup: { problem: null, feishuProblem: null } }
 /** Start a mock HTTP server that returns 503 until tmux launches the service (unless always is true). */
 async function answering(state: unknown = READY, always = false): Promise<string> {
@@ -279,6 +283,48 @@ it('exits 4 for an unknown ticket without recording a fact, 1 when unreachable, 
       .toMatchObject({ code: 3, stderr: expect.stringContaining('waiting for setup') })
   } finally { await new Promise<void>(resolve => { waiting.close(() => { resolve() }) }) }
 }, 20_000)
+it('lists the registered instances, starts one by name from its row, and prints the list when no action is given', async () => {
+  const url = await answering()
+  const port = Number(new URL(url).port)
+  const home = join(root, 'homes', 'alpha'), workspace = join(home, 'workspace')
+  registered({ name: 'alpha', profile: 'alpha-p', port, dshHome: home, workspace, tmuxSession: 'dsh-alpha' })
+  const listed = await run('ls')
+  expect(listed).toMatchObject({ code: 0 })
+  expect(listed.stdout.split('\n')[0]).toMatch(/^NAME\s+PORT\s+STATE\s+URL$/)
+  expect(listed.stdout).toContain('alpha')
+  expect(listed.stdout).toContain(`http://127.0.0.1:${port}/`)
+  expect(listed.stdout).toContain('stopped')
+  const bare = await run()
+  expect(bare).toMatchObject({ code: 0, stdout: expect.stringContaining('start <name>') })
+  const pid = sleeper()
+  writeFileSync(join(root, 'pane'), `${pid}\n`)
+  started(service(pid, 'alpha-p'))
+  expect(await run('start', 'alpha', '--timeout', '10')).toMatchObject({ code: 0 })
+  const tmux = readFileSync(join(root, 'tmux.log'), 'utf8').split('---\n').map(call => call.split('\n'))
+  const created = tmux.find(call => call[0] === 'new-session')!
+  expect(created).toEqual(expect.arrayContaining(['-s', 'dsh-alpha', '-c', workspace]))
+  const command = created.find(word => word.startsWith('umask 077; exec '))!
+  // The shell command quotes the home, whose path can contain spaces.
+  expect(command.replace(/'/g, '')).toContain(`DSH_HOME=${home}`)
+  expect(command).toContain('--profile alpha-p')
+  expect(JSON.parse((await run('status', 'alpha')).stdout)).toMatchObject({ cwd: workspace, archived: false })
+}, 20_000)
+it('refuses to start or restart an archived instance and lets monitoring skip it', async () => {
+  registered({ name: 'alpha', profile: 'alpha-p', port: 5099, workspace: join(root, 'w'), archived: true })
+  const detail = await run('status', 'alpha')
+  expect(detail.code).toBe(1)
+  expect(JSON.parse(detail.stdout)).toMatchObject({ archived: true, manually_stopped: true })
+  expect(await run('start', 'alpha')).toMatchObject({ code: 1, stderr: expect.stringContaining('alpha-p is archived in') })
+  expect(await run('restart', 'alpha')).toMatchObject({ code: 1, stderr: expect.stringContaining('is archived in') })
+  expect(existsSync(join(root, 'tmux.log'))).toBe(false)
+  expect(await run('--respect-stop', 'start', 'alpha')).toMatchObject({ code: 0, stdout: expect.stringContaining('archived') })
+})
+it('names the registry for an unknown instance, and refuses a profile that contradicts the row', async () => {
+  registered({ name: 'alpha', profile: 'alpha-p', port: 5099 })
+  expect(await run('status', 'nope')).toMatchObject({ code: 1, stderr: expect.stringContaining('No instance named nope is registered') })
+  expect(await run('start', 'alpha', '--profile', 'other'))
+    .toMatchObject({ code: 1, stderr: expect.stringContaining('alpha is registered with profile alpha-p, not other') })
+})
 it('backfills a ticket timeline on request, writing each derived fact once', async () => {
   const { url, asked } = await serving(TIMELINE)
   expect(await run('why', 't1', '--backfill', '--url', url)).toMatchObject({ code: 0 })
