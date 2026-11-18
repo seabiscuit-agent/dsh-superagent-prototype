@@ -30,6 +30,8 @@ export interface Trigger {
   human: boolean
   /** Source-declared: the sender addressed the agent, by mentioning it or in a direct message to it. */
   addressed?: 'mention' | 'direct'
+  /** Source-declared `<source>.<kind>` event, the only thing dispatch rules match on besides the source. */
+  event?: string
   /** A local command prefix the host dispatched: `dispatch` accepts it mechanically, `discussion` never starts a ticket. */
   intent?: 'dispatch' | 'discussion'
   at: string
@@ -57,6 +59,10 @@ export interface TriggerDisposition {
   requeued?: true
   /** The tickets whose Executor handed it back as beyond the ticket, each once, with why; it goes to Eval once none decides it. */
   handbacks?: { ticketId: string; reason: string; at: string }[]
+  /** The dispatch rule that took it, the rules that made it ambiguous, or the one whose capacity held it. */
+  dispatch?: { result: 'created'; rule: string; ticketId: string }
+    | { result: 'ambiguous'; rules: string[] }
+    | { result: 'capacity'; rule: string; active: number }
   /** The tickets whose Executor acknowledged it or answered it, taking it up as within the ticket. */
   acked?: string[]
   at: string
@@ -122,6 +128,9 @@ export type MandateBasis = Received & { sender?: string; rules?: string[] } & (
   | { via: 'listed'; addressed?: 'mention' | 'direct'; observation?: { mode?: AcceptMode }; authority?: string }
   /** A message of a bot on its Source's bot list: an inferred candidate at most, never an explicit request or a stop. */
   | { via: 'bot'; addressed?: 'mention' | 'direct'; observation: { mode: AcceptMode } }
+  /** A machine event a dispatch rule took without an assessment; `gate` is the admission path it inherited. */
+  | { via: 'dispatch'; rule: string; event: string
+    gate: { via: 'bot'; sender: string } | { via: 'admission'; cell: AdmissionCell } }
 )
 
 /** Immutable authorization produced by an accept decision; execution is bounded by it and it never changes. */
@@ -272,9 +281,22 @@ export type TicketInput =
  */
 export interface PolicyEffect {
   rules?: { id: string; name: string; change: 'changed' | 'disabled'; instruction?: string }[]
+  /** The dispatch rule this ticket was accepted under, which changed or no longer applies. */
+  dispatch?: { rule: string; title: string; change: 'changed' | 'disabled'; brief?: string }
   proactive?: false
   requesterAllowed?: false
   requester?: ActorRef
+}
+
+/** A dispatch rule: a machine event a Source declares, accepted without an assessment when exactly one rule matches. */
+export interface DispatchRule {
+  id: string
+  enabled: boolean
+  when: { source: string; events: string[] }
+  title: string
+  brief: string
+  /** How many of the rule's tickets may be open at once; a full rule holds the trigger instead of creating another. */
+  maxActive: number
 }
 
 export type TicketEndBy = 'executor' | 'human'

@@ -139,7 +139,10 @@ function policyMessage(effect?: PolicyEffect): string {
     ...(effect.rules ?? []).map(rule => rule.change === 'disabled'
       ? `Rule ${rule.name} (${rule.id}), which this ticket was accepted under, no longer applies: finish only a change within it, or report dropped.`
       : `Rule ${rule.name} (${rule.id}), which this ticket was accepted under, changed. Keep the remaining work within it as it reads now: ${rule.instruction}`),
-    ...effect.proactive === false ? ['Work inferred from a rule is no longer accepted, as the accept mode is no longer auto: finish only '
+    ...effect.dispatch ? [effect.dispatch.change === 'disabled'
+      ? `Dispatch rule ${effect.dispatch.rule} (${effect.dispatch.title}), which opened this ticket, no longer applies: finish only what is in progress within the assignment, or report dropped.`
+      : `Dispatch rule ${effect.dispatch.rule} (${effect.dispatch.title}), which opened this ticket, changed. Keep the remaining work within its brief as it reads now: ${effect.dispatch.brief ?? ''}`] : [],
+    ...effect.proactive === false ? ['Work inferred from a rule is no longer accepted: finish only '
       + 'what is in progress within the assignment, or report dropped, and take on nothing new.'] : [],
     ...effect.requesterAllowed === false ? [`The sender this ticket is for, ${effect.requester ? `${effect.requester.id} on ${effect.requester.source}` : 'who '
       + 'asked for it'}, may no longer start work here: finish the assignment within its scope, and take no new requests from them on it.`] : []].join('\n')

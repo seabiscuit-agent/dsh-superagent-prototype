@@ -56,6 +56,12 @@ export function eventNotice(event: DomainEvent, ticket: (id: string) => Ticket |
     const id = event.data.triggerId
     return receiptNotice({ trigger_requeued: id, read: `trigger/${id}`, at }, `Trigger ${id} queued for a fresh assessment`)
   }
+  if (event.type === 'dispatch.held') {
+    const { triggerId: id, rule, reason } = event.data
+    const note = 'The dispatch rule is at its maximum open tickets. Close one of its tickets, then retry with orchestrator_trigger_requeue.'
+    return receiptNotice({ dispatch_held: { trigger_id: id, rule, reason }, read: `trigger/${id}`, note, at },
+      `Held trigger ${id} for dispatch rule ${rule}: ${reason}`)
+  }
   if (event.type === 'agenda.dropped') {
     const { ticketId, key, reason, at } = event.data
     return receiptNotice({ agenda_dropped: { ticket_id: ticketId, key, reason, at },

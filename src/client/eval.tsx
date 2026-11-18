@@ -67,6 +67,47 @@ function RuleRow({ rule, expanded, onToggle, onChange, onDuplicate, onRemove }: 
   </li>
 }
 
+type DispatchRule = Settings['policy']['dispatch']['rules'][number]
+const eventsText = (rule: DispatchRule) => rule.when.events.join(', ')
+function DispatchRuleRow({ rule, sources, expanded, onToggle, onChange, onDuplicate, onRemove }: {
+  rule: DispatchRule; sources: SourceView[]; expanded: boolean; onToggle: () => void; onChange: (rule: DispatchRule) => void
+  onDuplicate: () => void; onRemove: () => void
+}) {
+  const { t } = usePanel()
+  const title = rule.title.trim() || t('newDispatchRule')
+  return <li className="dt-rule">
+    <DisclosureRow icon={<span className="dt-rule-dot" data-enabled={rule.enabled || undefined} />} title={title} open={expanded}
+      onToggle={onToggle} collapsedContent={<span className="dt-rule-preview">{rule.when.source} · {eventsText(rule)}</span>}>
+      <div className="dt-rule-body">
+        <Field label={t('dispatchRuleSource')}><select className="dt-select" value={rule.when.source}
+          onChange={event => onChange({ ...rule, when: { ...rule.when, source: event.target.value } })}>
+          {!rule.when.source && <option value="">{t('dispatchRuleSourcePick')}</option>}
+          {sources.map(source => <option key={source.id} value={source.id}>{source.id}</option>)}
+        </select></Field>
+        <Field label={t('dispatchRuleEvents')}>
+          <Input value={eventsText(rule)} required placeholder={t('dispatchRuleEventsPlaceholder')}
+            onChange={event => onChange({ ...rule, when: { ...rule.when, events: event.target.value.split(/[,\s]+/).filter(Boolean) } })} />
+        </Field>
+        <Field label={t('dispatchRuleTitle')}><Input value={rule.title} required maxLength={LIMITS.ruleName}
+          onChange={event => onChange({ ...rule, title: event.target.value })} /></Field>
+        <Field label={t('dispatchRuleBrief')}>
+          <textarea className="dt-textarea" rows={4} required maxLength={LIMITS.ruleInstruction} value={rule.brief}
+            placeholder={t('dispatchRuleBriefPlaceholder')}
+            onChange={event => onChange({ ...rule, brief: event.target.value })} />
+        </Field>
+        <Field label={t('dispatchRuleMaxActive')}><Input type="number" min={1} max={LIMITS.maxWorkers.max} required value={rule.maxActive}
+          onChange={event => onChange({ ...rule, maxActive: Number(event.target.value) })} /></Field>
+        <div className="dt-actions">
+          <Button variant="ghost" size="sm" icon={<Icon name="copy" />} onClick={onDuplicate}>{t('duplicate')}</Button>
+          <Button variant="ghost" size="sm" icon={<Icon name="trash" />} onClick={onRemove}>{t('remove')}</Button>
+        </div>
+      </div>
+    </DisclosureRow>
+    <Switch className="dt-rule-switch" checked={rule.enabled} onChange={enabled => onChange({ ...rule, enabled })} label={t('dispatchRuleEnable',
+      { name: title })} />
+  </li>
+}
+
 type Part = Record<string, unknown>
 function SourcePart({ source, part, saved, dirty, onChange, reload }: {
   source: SourceView; part: Part; saved: Part; dirty: boolean; onChange: (next: Part) => void; reload: () => Promise<void>
@@ -139,7 +180,9 @@ function PolicyBlock() {
   const draft = useBlockDraft('policy', blocks.policy.value, blocks.policy.revision)
   const policy = draft.value
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [dispatchExpanded, setDispatchExpanded] = useState<Set<string>>(new Set())
   const parts = sources.filter(source => source.installed && source.policy)
+  const dispatchSources = sources.filter(source => source.installed)
   const [tab, setTab] = useState<string>()
   const current = parts.find(source => source.id === tab) ?? parts[0]
   const edit = (next: Partial<typeof policy>) => draft.edit({ ...policy, ...next })
@@ -148,11 +191,26 @@ function PolicyBlock() {
     setExpanded(new Set([...expanded, rule.id]))
     edit({ rules: [...policy.rules.slice(0, at), rule, ...policy.rules.slice(at)] })
   }
+  const insertDispatch = (rule: DispatchRule, at: number) => {
+    setDispatchExpanded(new Set([...dispatchExpanded, rule.id]))
+    edit({ dispatch: { ...policy.dispatch, rules: [...policy.dispatch.rules.slice(0, at), rule, ...policy.dispatch.rules.slice(at)] } })
+  }
+  const toggleDispatch = (id: string) => {
+    const next = new Set(dispatchExpanded)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    setDispatchExpanded(next)
+  }
   // Expand all rules when native form validation fails inside a collapsed rule.
-  const reveal = (target: EventTarget) => { if (target instanceof Element
-    && target.closest('.dt-rules')) setExpanded(new Set(policy.rules.map(rule => rule.id))) }
+  const reveal = (target: EventTarget) => {
+    if (!(target instanceof Element)) return
+    if (target.closest('.dt-rules')) setExpanded(new Set(policy.rules.map(rule => rule.id)))
+    if (target.closest('.dt-dispatch-rules')) setDispatchExpanded(new Set(policy.dispatch.rules.map(rule => rule.id)))
+  }
   const part = (id: string) => (policy.sources[id] ?? { allowed: [] }) as Part
   const add = () => insert({ id: crypto.randomUUID(), name: '', enabled: true, instruction: '' }, policy.rules.length)
+  const addDispatch = () => insertDispatch({ id: crypto.randomUUID(), enabled: true,
+    when: { source: dispatchSources[0]?.id ?? '', events: [] }, title: '', brief: '', maxActive: 2 }, policy.dispatch.rules.length)
   return <form className="dt-form dt-block" onSubmit={event => { void draft.submit(event) }}
     onInvalidCapture={event => reveal(event.target)}>
     <Fields disabled={draft.busy}>
@@ -171,6 +229,18 @@ function PolicyBlock() {
             index + 1)}
           onRemove={() => edit({ rules: policy.rules.filter((_, position) => position !== index) })} />)}</ul>
             : <Hint>{t('rulesEmpty')}</Hint>}
+      </Section>
+      <Section title={t('dispatchRules')} hint={t('dispatchRulesHint')} action={<Button variant="ghost" size="sm" icon={<Icon name="plus" />}
+        onClick={addDispatch}>{t('addDispatchRule')}</Button>}>
+        {policy.dispatch.rules.length ? <ul className="dt-rules dt-dispatch-rules">{policy.dispatch.rules.map((rule, index) =>
+          <DispatchRuleRow key={rule.id} rule={rule} sources={dispatchSources} expanded={dispatchExpanded.has(rule.id)}
+            onToggle={() => toggleDispatch(rule.id)}
+            onChange={next => edit({ dispatch: { ...policy.dispatch, rules: policy.dispatch.rules.map((item, position) => position === index
+              ? next : item) } })}
+            onDuplicate={() => insertDispatch({ ...rule, id: crypto.randomUUID(), title: `${rule.title}${t('copySuffix')}`.slice(0, LIMITS.ruleName) },
+              index + 1)}
+            onRemove={() => edit({ dispatch: { ...policy.dispatch, rules: policy.dispatch.rules.filter((_, position) => position !== index) } })} />)}
+        </ul> : <Hint>{t('dispatchRulesEmpty')}</Hint>}
       </Section>
       {current && <Section title={t('policyPerSource')} hint={t('policyPerSourceHint')}>
         {parts.length > 1 && <div className="dt-subtabs" role="tablist" aria-label={t('policyPerSource')}>

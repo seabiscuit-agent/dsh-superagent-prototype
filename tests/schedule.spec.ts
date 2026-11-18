@@ -81,7 +81,7 @@ describe('schedule source', () => {
       expect(morning).toEqual({
         id: scheduleTriggerId('morning', '2026-11-18T00:02:00.000Z'), source: 'schedule',
         threads: [{ source: 'schedule', id: 'morning' }], actor: { source: 'schedule', id: '' }, human: false,
-        at: '2026-11-18T00:02:00.000Z', text: 'Say good morning',
+        event: 'schedule.fire', at: '2026-11-18T00:02:00.000Z', text: 'Say good morning',
         meta: { job: 'morning', due: '2026-11-18T00:02:00.000Z', cron: '* * * * *', timezone: 'UTC' },
       })
       // Two rows due in the same minute are two Triggers, and each row advances its own cursor.

@@ -44,7 +44,7 @@ export function scheduleTrigger(job: JobRow, due: Date): Trigger {
   const at = due.toISOString()
   return {
     id: scheduleTriggerId(job.key, at), source: SOURCE, threads: [{ source: SOURCE, id: job.key }],
-    actor: { source: SOURCE, id: '' }, human: false, at, text: job.text,
+    actor: { source: SOURCE, id: '' }, human: false, event: 'schedule.fire', at, text: job.text,
     meta: { job: job.key, due: at, cron: job.cron, timezone: job.timezone },
   }
 }

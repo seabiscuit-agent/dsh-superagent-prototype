@@ -31,6 +31,8 @@ function harness(policyOverrides: Partial<Policy> = {}, { emit, prepareTicket }:
     gate: (t, thread) => !t.human ? { admissible: false, reason: 'not human' } : t.actor.id === 'alice' ? { admissible: true, strength: 'explicit', basis: { via: 'listed' } } : thread.subscriptions.length ? { admissible: true, strength: 'inferred', basis: { via: 'followup' } } : { admissible: false, reason: 'not a member' },
     revalidate: () => version !== 'revoked',
     admitsInferred: rules => rules.length > 0,
+    dispatch: () => ({ mode: 'auto', rules: [] }),
+    dispatchBasis: (_trigger, rule, basis) => ({ ...basis, via: 'dispatch', rule: rule.id, event: '', gate: { via: 'admission', cell: 'unlistedUnaddressed' } }),
     ...policyOverrides,
   }
   let clock = 0

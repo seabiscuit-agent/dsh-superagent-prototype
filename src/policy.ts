@@ -6,7 +6,7 @@ import { LIMITS } from './limits.ts'
 import { z } from 'zod'
 import { ADMISSION_DEFAULTS, type Admission, type AdmissionCell, type AdmissionRow } from './admission.ts'
 import { key, type AssessmentOutcome, type Mandate, type Policy, type PolicyEffect, type SourceScope, type Strength, type Thread, type Ticket,
-  type Trigger, type ActorRef, type GateResult } from './core/index.ts'
+  type Trigger, type ActorRef, type GateResult, type MandateBasis } from './core/index.ts'
 import { sameName } from './infra/text.ts'
 import { WORKER_COMMANDS } from './infra/environment.ts'
 
@@ -67,6 +67,18 @@ const DEFAULT_RULES = [
 export const RuleSchema = z.object({ id: RuleIdSchema, name: z.string().trim().min(1).max(LIMITS.ruleName), enabled: z.boolean(),
   instruction: z.string().trim().min(1).max(LIMITS.ruleInstruction) }).strict()
 export type Rule = z.infer<typeof RuleSchema>
+/** A rule that accepts a declared machine event without an assessment; its `brief` becomes the ticket's scope. */
+export const DispatchRuleSchema = z.object({
+  id: RuleIdSchema,
+  enabled: z.boolean(),
+  when: z.object({ source: z.string().regex(/^[a-z][a-z0-9-]*$/),
+    events: z.array(z.string().regex(/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/)).min(1) }).strict(),
+  title: z.string().trim().min(1).max(LIMITS.ruleName),
+  brief: z.string().trim().min(1).max(LIMITS.ruleInstruction),
+  maxActive: z.number().int().min(1).max(LIMITS.maxWorkers.max),
+}).strict()
+export type DispatchRule = z.infer<typeof DispatchRuleSchema>
+
 export const RoleModelSchema = z.object({ provider: z.string().trim().min(1), model: z.string().trim().min(1), reasoningEffort: z.string().trim().min(1).optional() }).strict()
 export type RoleModel = z.infer<typeof RoleModelSchema>
 
@@ -79,6 +91,9 @@ export type SourcePolicy = z.infer<typeof SourcePolicySchema>
 export const PolicyConfigSchema = z.object({
   rules: z.array(RuleSchema).refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate rule IDs').default(DEFAULT_RULES),
   sources: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), SourcePolicySchema).default({}),
+  dispatch: z.object({ rules: z.array(DispatchRuleSchema)
+    .refine(rules => new Set(rules.map(rule => rule.id)).size === rules.length, 'Duplicate dispatch rule IDs').default([]) })
+    .strict().default(() => ({ rules: [] })),
 }).strict()
 export const EvalConfigSchema = z.object({
   mode: z.enum(['off', 'observe', 'auto']).default('observe'),
@@ -114,7 +129,8 @@ export const POLICY_REVISION = 'mandate-v3'
  * Changes to models, concurrency, pause state, or polling intervals do not invalidate existing decisions.
  */
 export function policyVersion(settings: Settings): string {
-  return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources }))
+  return key(POLICY_REVISION, JSON.stringify({ rules: settings.policy.rules, mode: settings.eval.mode, sources: settings.policy.sources,
+    dispatch: settings.policy.dispatch }))
 }
 export function allowedSender(settings: Settings, actor: ActorRef): z.infer<typeof AllowedSchema> | undefined {
   return settings.policy.sources[actor.source]?.allowed.find(entry => sameName(entry.id, actor.id))
@@ -151,13 +167,24 @@ export function policyEffects(tickets: readonly Ticket[], old: Settings, now: Se
       if (!is?.enabled) return was?.enabled ? [{ id, name: was.name, change: 'disabled' }] : []
       return JSON.stringify(was) === JSON.stringify(is) ? [] : [{ id, name: is.name, change: 'changed', instruction: is.instruction }]
     })
-    const effect: PolicyEffect = rules.length ? { rules } : {}
+    const { basis } = ticket.mandate
+    // The dispatch rule this ticket was accepted under, when it changed or no longer applies.
+    const dispatch = basis.via === 'dispatch' ? (() => {
+      const was = old.policy.dispatch.rules.find(rule => rule.id === basis.rule)
+      const nowRule = now.policy.dispatch.rules.find(rule => rule.id === basis.rule)
+      if (!nowRule?.enabled) return was?.enabled ? { rule: basis.rule, title: was.title, change: 'disabled' as const } : undefined
+      if (was && JSON.stringify(was) === JSON.stringify(nowRule)) return undefined
+      return { rule: basis.rule, title: nowRule.title, change: 'changed' as const, brief: nowRule.brief }
+    })() : undefined
+    const effect: PolicyEffect = { ...rules.length ? { rules } : {}, ...dispatch ? { dispatch } : {} }
     if (before.revalidate(ticket.mandate) && !after.revalidate(ticket.mandate)) {
-      // With the previous accept mode and rules, the Mandate holds unless the sender or receiving scope lost authorization.
-      const asBefore = { ...now, eval: old.eval, policy: { ...now.policy, rules: old.policy.rules } }
+      // With the previous accept mode, rules and dispatch rules, the Mandate holds unless the sender or receiving scope lost authorization.
+      const asBefore = { ...now, eval: old.eval, policy: { ...now.policy, rules: old.policy.rules, dispatch: old.policy.dispatch } }
       if (!settingsPolicy(asBefore, scope(now)).revalidate(ticket.mandate)) {
         Object.assign(effect, { requesterAllowed: false, requester: ticket.mandate.actor })
-      } else if (ticket.mandate.strength === 'inferred' && old.eval.mode === 'auto' && now.eval.mode !== 'auto') effect.proactive = false
+      } else if (basis.via === 'dispatch' || ticket.mandate.strength === 'inferred' && old.eval.mode === 'auto' && now.eval.mode !== 'auto') {
+        effect.proactive = false
+      }
     }
     if (Object.keys(effect).length) effects.set(ticket.id, effect)
   }
@@ -210,6 +237,18 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       return { admissible: false, reason: !allowed ? 'not_a_member' : receivable && admission === 'ignore' ? 'admission_ignored' : 'no_mention' }
     },
     admitsInferred: rules => mode === 'auto' && rules.length > 0 && rules.every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id)),
+    dispatch(trigger: Trigger) {
+      const event = trigger.event
+      return { mode, rules: event ? settings.policy.dispatch.rules
+        .filter(rule => rule.enabled && rule.when.source === trigger.source && rule.when.events.includes(event)) : [] }
+    },
+    dispatchBasis(trigger: Trigger, rule: z.infer<typeof DispatchRuleSchema>, basis: MandateBasis): MandateBasis {
+      const received = { source: basis.source, scope: basis.scope, ...basis.row === undefined ? {} : { row: basis.row } }
+      const event = trigger.event ?? ''
+      if (basis.via === 'bot') return { ...received, via: 'dispatch', rule: rule.id, event, gate: { via: 'bot', sender: basis.sender ?? trigger.actor.id } }
+      if (basis.via === 'admission') return { ...received, via: 'dispatch', rule: rule.id, event, gate: { via: 'admission', cell: basis.cell } }
+      throw new Error('A dispatch basis needs a bot or admission gate basis')
+    },
     revalidate(mandate: Mandate) {
       // Revalidation rules follow docs/002 (Eval path; Resume revalidates).
       const { basis } = mandate
@@ -217,6 +256,14 @@ export function settingsPolicy(settings: Settings, sources: SourceScope): Policy
       const current = source && basis.scope ? listened(sources, source, basis.scope) : undefined
       if (current && !current.listened) return false
       const rulesOn = (rules: string[] | undefined) => (rules ?? []).every(id => settings.policy.rules.some(rule => rule.enabled && rule.id === id))
+      // A rule-accepted event holds only while its rule, source/event and the gate path that admitted it all remain valid.
+      if (basis.via === 'dispatch') {
+        if (mandate.strength !== 'inferred' || mode !== 'auto') return false
+        const rule = settings.policy.dispatch.rules.find(candidate => candidate.id === basis.rule)
+        if (!rule?.enabled || rule.when.source !== source || !basis.event || !rule.when.events.includes(basis.event)) return false
+        if (basis.gate.via === 'bot') return !!listedBot(settings, mandate.actor)
+        return admissionOf(settings, source ?? '', current?.listened ? current.row : undefined, basis.gate.cell) === 'inferred'
+      }
       // Explicit follow-ups remain valid; inferred follow-ups require auto mode and enabled matched rules.
       if (basis.via === 'followup') return mandate.strength === 'explicit' || (mode === 'auto' && rulesOn(basis.rules))
       // A bot's candidate holds only while the bot remains on its Source's bot list and passes the observation checks below.
