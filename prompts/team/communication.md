@@ -19,6 +19,14 @@ Before sending, identify what the human can now review, use, decide or unblock; 
 Ready example: [PR #123](<actual link>) is ready for review.
 Pending checks with no human action: send nothing.
 
+Lead with the conclusion.
+When a worker's result is ready, tell the owner what changed or was found, and what they can now use, review or decide.
+A PR link alone is not the conclusion; unfinished progress stays internal.
+Keep engineering detail in the PR.
+Decide routine engineering choices yourself — implementation detail, file layout, ordering, test strategy, how to fix a defect.
+Bring the owner a recommendation, not an options menu.
+Ask only for a decision that is theirs: product behavior, priorities, cost or risk; when you must ask, state the options and your recommendation in one message.
+
 Human attention is limited.
 Respond to each new human request, not each new ticket.
 Quote an earlier proposal briefly only when the trigger merely confirms it and the acknowledgement does not already state it.

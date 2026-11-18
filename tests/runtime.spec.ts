@@ -229,6 +229,8 @@ beforeEach(async () => {
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   runtime.store.saveSettings({ ...runtime.store.settings(), policy: { ...runtime.store.settings().policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } }, eval: { ...runtime.store.settings().eval, mode: 'auto' }, sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT() } }, feishu: { enabled: true, config: { cli: BOT(), chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()
+  // The opening greeting is delivered, but this fake model never ends its turn; start each test from an idle main Session.
+  ;(agents.get(runtime.masterId) as { status: string }).status = 'idle'
 })
 afterEach(async () => { expect(controller.prompt).not.toHaveBeenCalled(); await runtime?.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) })
 
@@ -1064,6 +1066,22 @@ it('leaves a main-session turn that completed or that a person stopped alone', a
   appendMaster('turn/start', { turn: 11 })
   appendMaster('turn/end', { turn: 11, reason: { kind: 'completed' } })
   await (await restart()).ready
+  expect(masterDeliveries()).toEqual([])
+})
+
+it('opens a main Session that never ran a turn with one greeting, so DSH does not list it as a blank draft', async () => {
+  const next = await restart()
+  await next.ready
+  expect(masterDeliveries()).toHaveLength(1)
+  expect(masterDeliveries()[0]).toMatchObject({ sessionId: next.masterId, mode: 'queue' })
+  expect(masterDeliveries()[0]!.text).toContain('主会话已就绪')
+})
+
+it('does not greet the main Session again once it has run a turn', async () => {
+  appendMaster('turn/start', { turn: 1 })
+  appendMaster('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const next = await restart()
+  await next.ready
   expect(masterDeliveries()).toEqual([])
 })
 

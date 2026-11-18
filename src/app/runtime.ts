@@ -59,6 +59,15 @@ declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceH
 const now = (): string => new Date().toISOString()
 
 /**
+ * The main Session's first message, sent once when it has never run a turn.
+ *
+ * DSH lists a Session created without a committed `turn/start` as blank: its name disappears and the workspace shows
+ * an unnamed draft, so a freshly configured instance looked as if its main Session had never been created. One real
+ * turn fixes that; it also lets the greeting state that the Session is ready, in the owner's language.
+ */
+const OPENING_NOTE = '实例启动：这是主会话的第一个回合。用一句话告诉 owner 主会话已就绪，之后的需求可以直接在这里说。不要调用任何工具，说完即结束回合。'
+
+/**
  * Composition root of dsh-superagent that connects `Store`, `Setup`, `Engine`, `SourceRegistry`, `Effects`, `Outbox`, `Passes`, `Sessions`, `Settings`, `Prompts`, `DshExecutor`, and `MasterAssessor`.
  * Exposes the `SourceHost` service on the Cordis context for source plugins and coordinates startup, setup checks, HTTP route registration, and graceful shutdown.
  * Locks the state directory before opening SQLite so concurrent processes cannot corrupt or double-migrate state.
@@ -283,15 +292,26 @@ export class Runtime extends Service implements SourceHost {
     }
     this.sessions.install()
     this.executor.install()
-    await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
+    const master = await this.sessions.ensure(this.masterId, this.machine.stateDir, 'dsh-superagent orchestrator', 'orchestrator')
     for (const id of this.settings.syncable()) await this.settings.sync(id).catch(() => { /* sync() records its failure in health. */ })
     // If stop() was called while awaiting setup, session creation, or policy sync, do not start background loops.
     if (this.closing()) return
+    await this.openMainSession(master)
     this.executor.resume()
     this.passes.start()
     this.effects.start()
     this.resumeMaster()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
+  }
+  /**
+   * Opens the main Session with its first turn when it has never run one, so DSH stops listing it as a blank session
+   * with no title. The check keeps later starts from greeting again; a failure is logged because the next start retries
+   * while the Session is still blank, and a greeting must never keep the runtime from becoming ready.
+   */
+  private async openMainSession(agent: Agent): Promise<void> {
+    if (agent.session.snapshotEvents().some(event => event.type === 'turn/start')) return
+    await this.sessions.prompt(this.masterId, `opening:${this.masterId}:${Date.now()}`, OPENING_NOTE, 'queue').catch(
+      error => this.ctx.logger.warn('dsh-superagent could not open the main Session with its first turn: %s', String(error)))
   }
   /**
    * Resumes the main-Session turn a restart cut off, so the person whose request was running does not have to send it again.
