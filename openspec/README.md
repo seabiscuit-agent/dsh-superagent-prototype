@@ -41,6 +41,8 @@ openspec/
   （结果/答复回执由宿主合成、派工前缀）、`resume-master-turn-after-restart`（重启后续跑被切断的主会话回合）。
 - 仍在进行的变更：`on-demand-routing`（主会话按需建单与撤订路由）、`orchestrator-consult`
   （worker 先问 orchestrator、超授权再升级为人）。
+- 待实施提案：`ticket-question-answers`（工单详情页点选作答、同一答案槽先到先算、投递前
+  15 秒可撤回、超时走更正）。
 
 ## 流程：探索 → 提案 → 实施 → 归档
 
